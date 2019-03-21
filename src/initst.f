@@ -4,7 +4,7 @@ c     *                      subroutine initst                       *
 c     *                                                              *
 c     *                       written by : bh                        *
 c     *                                                              *
-c     *                   last modified : 2/8/2018 rhd               *
+c     *                   last modified : 11/26/2018 rhd             *
 c     *                                                              *
 c     *     at program startup, initializes various variables and    *
 c     *     arrays needed to set up the program correctly.           *
@@ -16,14 +16,12 @@ c
       subroutine initst( sbflg1, sbflg2 )
       use global_data ! old common.main
 c
-      use ifport
       use elem_load_data, only : elem_loads
       use segmental_curves
       use main_data, only : output_packets, packet_file_name,
      &                      packet_file_no, ascii_packet_file_name,
      &                      ascii_packet_file_no, temperatures_ref,
-     &                      fgm_node_values_defined,
-     &                      fgm_node_values_cols, cp_matls_present,
+     &                      cp_matls_present,
      &                      cohesive_ele_types, linear_displ_ele_types,
      &                      adjust_constants_ele_types,
      &                      axisymm_ele_types, umat_used,
@@ -42,9 +40,15 @@ c
      &                      initial_stresses_user_routine,
      &                      initial_stresses_file, max_step_limit,
      &                      user_cnstrn_stp_factors, stpchk,
-     &                      actual_cnstrn_stp_factors
+     &                      actual_cnstrn_stp_factors,
+     &                      fgm_node_values_defined,
+     &                      fgm_node_values_used,
+     &                      fgm_node_values_cols,
+     &                      initial_state_option, initial_state_step,
+     &                      initial_stresses_input,
+     &                      id_dollar, force_solver_rebuild
 c
-      use stiffness_data
+      use stiffness_data 
       use file_info
       use contact
       use damage_data
@@ -62,7 +66,7 @@ c
       implicit none
 c
       integer :: nblank, reclen, endchr, lword, rword, i, strtop,
-     &           strstp, rottop, env_length, k
+     &           strstp, rottop, k
       integer, external :: omp_get_max_threads
       logical :: promsw, echosw, comsw, atrdsw, eolsw, eofsw, menusw,
      &           ptsw, signsw, sbflg1, sbflg2
@@ -70,7 +74,6 @@ c
      &            fourth=0.25d0, ten_billion=1.0e10,
      &            hundredth=0.01d0, twentyth=0.05d0,
      &            thousandth=0.001d0
-      character(len=80) :: env_val
 c
 c                       initialize the file input and output parameters
 c
@@ -129,7 +132,7 @@ c
       call setout(out)
       nblank= 80
       reclen= 80
-      endchr= 1h$
+      endchr= id_dollar
       promsw= .false.
       echosw= .true.
       comsw= .false.
@@ -235,6 +238,8 @@ c
 c
       new_constraints = .false.
       new_analysis_param = .false.
+      force_solver_rebuild = .false.  ! global flag to force solver to rebuild
+
 c
 c                       initialize the existence of non-zero, reference
 c                       (nodal) tempertures.
@@ -498,6 +503,17 @@ c                       properties specified at the model nodes.
 c
       fgm_node_values_defined = .false.
       fgm_node_values_cols    = 8
+      fgm_node_values_used    = .false.
+c
+c                       initialize variables for support of a user
+c                       defined initial state (J-integrals)
+c
+      initial_state_option = .false.
+      initial_state_step = int(1.0e09)
+c
+c                       has user input initial (residual) stresses
+c
+      initial_stresses_input = .false.
 c
 c                       initialize logical flags used throughout code
 c                       to indicate various characteristics of elements
@@ -713,6 +729,12 @@ c
       initial_stresses_file = " "
       initial_stresses_user_routine = .false.
 c
+c                       blocking table initial size. now dynamically
+c                       allocated
+c
+      mxnmbl = 0
+      ptr_iprops = 0
+c
       return
 c
  9220 format(/1x,'>>>>> fatal error: the number of threads',
@@ -864,7 +886,6 @@ c     ****************************************************************
 c
       integer function warp3d_matl_num( material_model_id, nc )
 c
-      use main_data, only : material_model_names
       implicit none
       include 'param_def'
 c

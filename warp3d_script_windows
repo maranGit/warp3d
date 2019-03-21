@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 #
-#    Run WARP3D for Windows -- OpenMPonly + MKL direct/iterative sparse solver
+#    Run WARP3D for Windows -- OpenMP only + MKL direct/iterative sparse solver
 #    =========================================================================
 #
 #    --->>>  This script requires CygWin (free) software to be
 #    --->>>  installed. www.cygwin.com
 #
-#    usage: warp3d_windows (number-of-threads) ( < input ) ( > output )
+#    usage: warp3d_script_windows (number-of-threads) ( < input ) ( > output )
 #
 #           ( ) -- optional
 #
@@ -35,7 +35,7 @@ fi
 #           set executable file name for OpenMP + MKL sparse solver
 #           version of warp3d
 #
-warp3d_exe="$WARP3D_HOME/run_windows_64/warp3d.exe"
+warp3d_exe="$WARP3D_HOME/run_windows/warp3d.exe"
 #
 #           set the number of threads for WARP3D execution and
 #           for use by the MKL sparse solver. Here we just

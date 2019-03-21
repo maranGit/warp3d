@@ -22,7 +22,7 @@ c     *                    f-90 module erflgs                        *
 c     *                                                              *
 c     *                       written by : rhd                       *
 c     *                                                              *
-c     *              last modified : 2/8/2018 rhd                    *
+c     *              last modified : 12/12/2018 rhd                  *
 c     *                                                              *
 c     *     this small module replaces the old common.main           *
 c     *                                                              *
@@ -33,6 +33,23 @@ c     ****************************************************************
       implicit none
 c
       include 'param_def'
+c
+c              --- global single precision elements table (props) ---
+c
+c                  we use Cray pointers with implicit equivalencing
+c                  so we can continue to use iprops, props, lprops
+c                  variable names for the same space. Fortran pointers
+c                  will not allow this effective equivalencing.
+c                  we'll set mxel = noelem should mxel actually be
+c                  used.
+c
+      integer :: mxel
+      integer :: iprops
+      real    :: props
+      logical :: lprops
+      pointer ( ptr_iprops, iprops(mxelpr,10000000) ),
+     &        ( ptr_props,  props(mxelpr,10000000) ),
+     &        ( ptr_lprops, lprops(mxelpr,10000000) )
 c
 c              --- double precision arrays/vectors ---
 c
@@ -52,8 +69,7 @@ c
 c
 c              --- real arrays/vectors/scalars ---
 c
-!dir$ attributes align: 64:: props, times
-      real :: props(mxelpr,mxel)
+!dir$ attributes align: 64::  times
       real :: times(mxtim,2)
       real :: strtm, time_limit
 c
@@ -73,42 +89,40 @@ c
      &    trace(ntrc), convrg(10)
 c
 !dir$ attributes align: 64 :: lprops
-      logical :: lprops(mxelpr,mxel) ! only for equivalencing to props
-      equivalence ( lprops, props )
 c
 c              --- integer arrays/vectors/scalars ---
 c
 !dir$ attributes align: 64 :: dstmap,cstmap
       integer, allocatable, dimension (:) :: dstmap, cstmap
 
-!dir$ attributes align: 64 :: gpmap, cp, dcp, icp,
-     &    matlst, lodlst, prslst, plrlst, stprng, state, bits, outmap,
-     &    elblks, blk_ptr_head, MPI_DOF_LOCAL, num_dof_local,
-     &    proc_pids
-      integer :: gpmap(mxtgp),
+!dir$ attributes align: 64 :: cp, dcp, icp
+!dir$ attributes align: 64 :: matlst, lodlst, prslst, plrlst, stprng 
+!dir$ attributes align: 64 :: bits, outmap, blk_ptr_head 
+!dir$ attributes align: 64 :: MPI_DOF_LOCAL, num_dof_local
+!dir$ attributes align: 64 :: proc_pids
+!dir$ attributes align: 64 :: elblks
+      integer, allocatable, dimension (:,:) :: elblks
+c
+      integer ::  !   gpmap(mxtgp),
      &    cp(mxedof), dcp(mxedof), icp(mxutsz,2), matlst(mxmat),
      &    lodlst(mxlc), prslst(mxlsz), plrlst(mxlsz), stprng(mxlc,2),
-     &    state(mxtgp), bits(31),  outmap(mxlbel,mxelmp),
-     &    elblks(0:3,mxnmbl), blk_ptr_head(0:max_procs - 1),
+     &    bits(31), outmap(mxlbel,mxelmp),
+     &    blk_ptr_head(0:max_procs - 1),
      &    MPI_DOF_LOCAL(0:max_procs-1), num_dof_local(0:max_procs-1),
      &    proc_pids(1:max_procs-1)     ! end of arrays
 c
-      integer :: noelem, nonode, nummat, nogp, numcol,
+      integer :: noelem, nonode, nummat, numcol,
      &    nodof, nlibel, numlod, nprs, nplrs, numstc, nelblk, numgrp,
      &    lgnmcn, mxiter, mniter, lgoump, mxlitr, num_term_ifv,
      &    num_term_loads, mathed, csthed,  lodhed, inctop, crdtop,
      &    in, out, histep, lowstp, ltmstp, num_warn, num_error,
      &    num_fatal, solver_flag, old_solver_flag, solver_memory,
      &    num_threads,  max_mpc, max_mpc_tied,
-     &    myid, numprocs, MPI_VAL, douextdb
+     &    myid, numprocs, MPI_VAL, douextdb, mxnmbl
 c
 c                  counters to shut off error messages at some point
 c
       integer, save :: msg_count_1, msg_count_2   ! needs atomic update
-c
-!dir$ attributes align:64 :: iprops
-      integer :: iprops(mxelpr,mxel) ! only for equiv with props
-      equivalence ( iprops, props )
 c
 c              --- character arrays/vectors/scalars ---
 c
@@ -122,11 +136,11 @@ c
       end module global_data
 c     ****************************************************************
 c     *                                                              *
-c     *                    f-90 module main_data                     *
+c     *                     module main_data                         *
 c     *                                                              *
 c     *                       written by : rhd                       *
 c     *                                                              *
-c     *              last modified : 2/10/2018 rhd                   *
+c     *              last modified : 6/28/2018 rhd                   *
 c     *                                                              *
 c     *     define the data structures for main, large arrays        *
 c     *     used in warp3d solutions. also other variables as we     *
@@ -297,7 +311,7 @@ c                current load step (applied pressures, tractions,
 c                body forces).
 c
 c
-      logical elem_equiv_loads_now
+      logical :: elem_equiv_loads_now
       type :: elem_forces
         integer :: ncols
         double precision, pointer, dimension(:,:) :: forces
@@ -308,7 +322,7 @@ c
       double precision,
      &      save, allocatable, dimension(:) :: eq_node_forces
       integer, save, allocatable, dimension(:) :: eq_node_force_indexes
-      integer eq_node_force_len
+      integer :: eq_node_force_len
 c
 c
 c                 global variables being gradually moved from
@@ -322,8 +336,8 @@ c
 c                 information for output packets
 c
 c
-      integer packet_file_no, ascii_packet_file_no
-      logical output_packets
+      integer :: packet_file_no, ascii_packet_file_no
+      logical :: output_packets
       character(len=50) :: packet_file_name
       character(len=80) :: ascii_packet_file_name
       character(len=80) :: batch_mess_fname
@@ -334,8 +348,8 @@ c                 functionally graded materials
 c
 c
       real, save, allocatable, dimension(:,:) :: fgm_node_values
-      logical fgm_node_values_defined
-      integer fgm_node_values_cols
+      logical :: fgm_node_values_defined, fgm_node_values_used
+      integer :: fgm_node_values_cols
 c
 c
 c                 logical vectors indicating element types with
@@ -354,10 +368,10 @@ c                 material properties array. these sizes correspond to
 c                 mxmtpr x  mxmat in param_def and must always
 c                 be consistent !
 c
-      integer imatprp(300,500)
-      real  matprp(300,500)
-      logical lmtprp(300,500)
-      double precision dmatprp(300,500)
+      integer :: imatprp(300,500)
+      real  :: matprp(300,500)
+      logical :: lmtprp(300,500)
+      double precision :: dmatprp(300,500)
       equivalence (matprp,lmtprp)
       character(len=24), dimension(300,500) :: smatprp
 c
@@ -414,7 +428,7 @@ c
       end type
       type( step_convergence_data ), dimension(5) ::
      &   convergence_history
-      logical run_user_solution_routine
+      logical :: run_user_solution_routine
 c
 c                 A CP flag, stick here b/c it's a solution parameter
 c
@@ -449,7 +463,7 @@ c
 c                 line search parameters
 c
       logical :: line_search, ls_details
-        double precision ::
+      double precision ::
      & ls_min_step_length, ls_max_step_length, ls_rho,
      & ls_slack_tol
 c
@@ -465,12 +479,53 @@ c
 c
 
       double precision, allocatable :: initial_stresses(:,:)
-      logical ::  initial_stresses_user_routine
+      logical ::  initial_stresses_user_routine, 
+     &            initial_stresses_input
       character(len=100) :: initial_stresses_file
+c
+c                 support for the initial state concept
+c
+      logical :: initial_state_option
+      integer :: initial_state_step
+c
+c                 support for global forcing solver rebuild
+c
+      logical :: force_solver_rebuild
+c
+c                 hollerith constants so current compilers
+c                 stop complaining about stms such as
+c
+c                 if( ix .eq. 4hCENT ) ...
+c
+      integer, parameter :: id_node   = 4hNODE,
+     & id_cent   = 4hCENT,
+     & id_curr   = 4hCURR,
+     & id_defa   = 4hDEFA,
+     & id_true   = 4hTRUE,
+     & id_flse   = 4hFLSE,
+     & id_o222   = 4hO222,
+     & id_o14p   = 4hO14P,
+     & id_o09p   = 4hO09P,
+     & id_shrt   = 4hSHRT,
+     & id_long   = 4hLONG,
+     & id_o06p   = 4hO06P,
+     & id_o01p   = 4hO01P,
+     & id_o03p   = 4hO03P,
+     & id_o04p   = 4hO04P,
+     & id_o05p   = 4hO05P,
+     & id_o060   = 4hO06P,
+     & id_o07p   = 4hO07p,
+     & id_o111   = 4hO111,
+     & id_o333   = 4hO333,
+     & id_o3mp   = 4HO3MP,
+     & id_o22n   = 4HO22N,
+     & id_o22g   = 4HO22G,
+     & id_pcm    = 4Hpcm ,  ! requires blank after pcm to make 4 chars
+     & id_gaus   = 4HGAUS,
+     & id_dollar = 4H$      !  requires 3 blanks after $  
+
 
       end module
-
-
 
 
 

@@ -3,7 +3,7 @@ c     *                drive_eps_sig_internal_forces                 *
 c     *                                                              *
 c     *                       written by : bh                        *
 c     *                                                              *
-c     *                   last modified : 12/21/2017 rhd             *
+c     *                   last modified : 6/13/2018 rhd              *
 c     *                                                              *
 c     *      recovers all the strains, stresses                      *
 c     *      and internal forces (integral B-transpose * sigma)      *
@@ -15,12 +15,6 @@ c     *      Blocks are processed in parallei; using threads (OMP),  *
 c     *      domains in parallel using MPI                           *
 c     *                                                              *
 c     ****************************************************************
-c
-c
-c
-c              files containing code in this tree:
-c                rstgp1.f, dupstr.f rknstr.f gtlsn1.f rplstr.f
-c
 c
 c
       subroutine drive_eps_sig_internal_forces( step, iter,
@@ -40,7 +34,7 @@ c
 c             locals
 c
       integer :: blk, felem, mat_type, now_thread, num_enodes,
-     &           num_enode_dof, span, i, j, kkk, totdof, ksize
+     &           num_enode_dof, span, j, kkk, totdof, ksize
       integer :: num_term_ifv_threads(max_threads),
      &           idummy1(1), idummy2(1)
       integer, external :: omp_get_thread_num
@@ -49,7 +43,7 @@ c
      &                                 block_plastic_work(:),
      &                                 block_stress_norm2s(:),
      &                                 block_strain_norm2s(:)
-      double precision :: mag, start_time, sum_stress_norm2s,
+      double precision :: start_time, sum_stress_norm2s,
      &                    sum_strain_norm2s,
      &                    end_time, sum_ifv_threads(max_threads)
       double precision, parameter :: zero = 0.0d0, one = 1.0d0
@@ -61,8 +55,6 @@ c
       logical, parameter :: local_debug = .false.,
      &                      local_debug_sums = .false.
 c
-      integer :: init_file_no, ielem
-      logical :: initsig
       integer, external :: warp3d_get_device_number
 c
 c             MPI:
@@ -127,13 +119,22 @@ c
         umat_matl               = mat_type .eq. 8
         if( umat_matl .and. umat_serial ) blks_reqd_serial(blk) = .true.
       end do
-
 c
 c             allocate blocks of element internal force vectors.
 c             we compute the blocks of vectors in parallel then
 c             scatter in serial to eliminate conflicts.
 c
       call allocate_ifv( 1 )
+c
+c             user-defined initial state to support J computations.
+c           . set up global block-by-block
+c             data structure to store initial state. we
+c             save the displavement gradients - small-strain elastic
+c             strains. these are updated over solution until
+c             now step is > user-defined step to establish initial
+c             state. solid elements only.
+c
+      call recstr_setup_displ_grad_nis( step, iter )
 c
 c             update element strains, stresses, internal forces.
 c             MPI:
@@ -394,7 +395,7 @@ c     *                      subroutine do_nleps_block               *
 c     *                                                              *
 c     *                       written by : rhd                       *
 c     *                                                              *
-c     *                   last modified : 12/21/2017 rhd             *
+c     *                   last modified : 6/13/2018 rhd              *
 c     *                                                              *
 c     ****************************************************************
 c
@@ -405,7 +406,6 @@ c
      &                           local_debug_sums )
       use global_data ! old common.main
 c
-      use elem_extinct_data, only : dam_blk_killed, dam_state
       use elem_block_data,   only : einfvec_blocks, cdest_blocks,
      &                              edest_blocks, element_vol_blocks,
      &                              nonlocal_flags, nonlocal_data_n1
@@ -417,9 +417,10 @@ c
      &                              adjust_constants_ele_types,
      &                              axisymm_ele_types, link_types,
      &                              nonlocal_analysis, imatprp,
-     &                              initial_stresses
+     &                              initial_stresses,
+     &                              initial_state_option,
+     &                              initial_state_step
       use segmental_curves, only : max_seg_points, max_seg_curves
-      use damage_data, only : dam_ptr, growth_by_kill
 c
       implicit none
       include 'include_sig_up'
@@ -429,13 +430,13 @@ c
      &                    block_stress_sums(1), block_strain_sums(1)
       logical :: material_cut_step, local_debug_sums
 c
-      integer :: elem, ii, jj, span, felem, matnum, mat_type,
+      integer :: span, felem, matnum, mat_type,
      &           num_enodes, num_enode_dof, totdof, num_int_points,
      &           elem_type, int_order, cohes_type, surface
       double precision, parameter :: zero=0.0d0
       integer, external :: omp_get_thread_num
       logical :: geo_non_flg, bbar_flg, tet_elem, tri_elem,
-     &           axisymm_elem, cohesive_elem, used_flg
+     &           axisymm_elem, tflag
       logical, parameter :: local_debug = .false.
 c
       span           = elblks(0,blk)
@@ -508,8 +509,8 @@ c
       if( local_work%is_umat ) call material_model_info( felem, 0, 3,
      &                                 local_work%umat_stress_type )
       local_work%compute_f_bar =  bbar_flg .and.
-     &            ( elem_type  .eq. 2 ) .and.
-     &           ( local_work%is_umat .or. local_work%is_crys_pls )
+     &            ( elem_type  .eq. 2 )  .and.
+     &            ( local_work%is_umat .or. local_work%is_crys_pls )
       local_work%compute_f_n = geo_non_flg .and.
      &        ( local_work%is_umat .or. local_work%is_crys_pls )
       tet_elem = elem_type .eq. 6 .or. elem_type .eq. 13
@@ -517,9 +518,13 @@ c
       axisymm_elem = axisymm_ele_types(elem_type)
       local_work%is_bar_elem  = bar_types(elem_type)
       local_work%is_link_elem = link_types(elem_type)
-      local_work%process_initial_stresses =
+      local_work%process_initial_stresses = ! user-defined initial conditions
      &     allocated( initial_stresses ) .and. step == 1
-
+     &     .and. local_work%is_solid_matl
+      tflag =  iter > 0 .and. initial_state_option .and.
+     &         step <= initial_state_step
+     &         .and. local_work%is_solid_matl
+      local_work%capture_initial_state = tflag
 c
 c             See if we're actually an interface damaged material
 c
@@ -574,7 +579,7 @@ c
       call dupstr_blocked( blk, span, felem, num_int_points,
      &   num_enodes, num_enode_dof, totdof, mat_type,
      &   geo_non_flg, step, iter, incid(incmap(felem)),
-     &   cdest_blocks(blk)%ptr(1,1), local_work%ce_0,
+     &   cdest_blocks(blk)%ptr, local_work%ce_0,
      &   local_work%ce_n, local_work%ce_mid,
      &   local_work%ce_n1, local_work%ue, local_work%due, local_work )
 c
@@ -712,7 +717,7 @@ c     *                   subroutine recstr_allocate                 *
 c     *                                                              *
 c     *                       written by : rhd                       *
 c     *                                                              *
-c     *                   last modified :  9/25,2017 rhd             *
+c     *                   last modified :  9/15/2018 rhd             *
 c     *                                                              *
 c     *     allocate data structure in local_work for updating       *
 c     *     strains-stresses-internal forces.                        *
@@ -758,30 +763,20 @@ c
          write(out,9000) 2
          call die_abort
       end if
-!DIR$ VECTOR ALIGNED
        local_work%det_j = zero
-!DIR$ VECTOR ALIGNED
        local_work%det_j_mid = zero
-!DIR$ VECTOR ALIGNED
        local_work%gama = zero
-!DIR$ VECTOR ALIGNED
        local_work%gama_mid = zero
-!DIR$ VECTOR ALIGNED
        local_work%neta = zero
-!DIR$ VECTOR ALIGNED
        local_work%nxi = zero
-!DIR$ VECTOR ALIGNED
        local_work%nzeta = zero
 c
       if( local_work%geo_non_flg ) then
         allocate( local_work%fn(mxvl,3,3),
      &           local_work%fn1(mxvl,3,3),
      &           local_work%dfn1(mxvl) )
-!DIR$ VECTOR ALIGNED
         local_work%fn  = zero
-!DIR$ VECTOR ALIGNED
         local_work%fn1 = zero
-!DIR$ VECTOR ALIGNED
         local_work%dfn1 = zero
       end if
 
@@ -790,8 +785,8 @@ c
      &  local_work%vol_block(mxvl,8,3),
      &  local_work%volume_block(mxvl),
      &  local_work%volume_block_0(mxvl),
-     &  local_work%volume_block_n(mxvl),
-     &  local_work%volume_block_n1(mxvl),
+     &  local_work%integral_detF_n(mxvl),
+     &  local_work%integral_detF_n1(mxvl),
      &  local_work%jac(mxvl,3,3),
      &  local_work%b(mxvl,mxedof,nstr),
      &  local_work%ue(mxvl,mxedof),
@@ -802,7 +797,6 @@ c
          call die_abort
       end if
 
-!DIR$ VECTOR ALIGNED
       local_work%b = zero
 c
       allocate( local_work%uen1(mxvl,mxedof),
@@ -815,15 +809,10 @@ c
          write(out,9000) 4
          call die_abort
       end if
-!DIR$ VECTOR ALIGNED
       local_work%det_j       = zero
-!DIR$ VECTOR ALIGNED
       local_work%rot_blk_n1  = zero
-!DIR$ VECTOR ALIGNED
       local_work%urcs_blk_n1 = zero
-!DIR$ VECTOR ALIGNED
       local_work%urcs_blk_n  = zero
-!DIR$ VECTOR ALIGNED
       local_work%initial_stresses = zero
 
 c
@@ -841,6 +830,17 @@ c
       if( error .ne. 0 ) then
          write(out,9000) 5
          call die_abort
+      end if
+c
+      if( local_work%capture_initial_state ) then
+        span = local_work%span
+        allocate( local_work%plastic_work_density_n1(span),
+     &            stat=error  )
+        if( error .ne. 0 ) then
+         write(out,9000) 52
+         call die_abort
+        end if
+        local_work%plastic_work_density_n1 = zero
       end if
 c
       allocate( local_work%sigyld_vec(mxvl),
@@ -1030,7 +1030,7 @@ c     *                   subroutine recstr_deallocate               *
 c     *                                                              *
 c     *                       written by : rhd                       *
 c     *                                                              *
-c     *                   last modified :  3/15/2017 rhd             *
+c     *                   last modified :  9/15/2018 rhd             *
 c     *                                                              *
 c     *     release data structure in local_work for updating        *
 c     *     strains-stresses-internal forces.                        *
@@ -1097,7 +1097,7 @@ c
       deallocate(
      &  local_work%vol_block,
      &  local_work%volume_block, local_work%volume_block_0,
-     &  local_work%volume_block_n, local_work%volume_block_n1,
+     &  local_work%integral_detF_n, local_work%integral_detF_n1,
      &  local_work%jac,
      &  local_work%b,
      &  local_work%ue,
@@ -1145,6 +1145,14 @@ c
       if( error .ne. 0 ) then
          write(out,9000) 5
          call die_abort
+      end if
+c
+      if( local_work%capture_initial_state ) then
+        deallocate( local_work%plastic_work_density_n1, stat=error )
+        if( error .ne. 0 ) then
+         write(out,9000) 52
+         call die_abort
+        end if
       end if
 c
       if( local_debug ) write(out,*) "..recstr_dell @ 8"
@@ -1354,15 +1362,13 @@ c
       use global_data ! old common.main
 c
       use elem_block_data, only:  history_blocks,
-     &                            eps_n_blocks, urcs_n_blocks,
-     &                            history_blk_list
+     &                            eps_n_blocks, urcs_n_blocks
       use main_data,       only:  dtemp_nodes, dtemp_elems,
      &                            temper_nodes, temper_elems,
      &                            temper_nodes_ref, temperatures_ref,
      &                            fgm_node_values,
      &                            fgm_node_values_defined,
-     &                            fgm_node_values_cols, matprp,
-     &                            lmtprp
+     &                            fgm_node_values_cols, matprp
 c
       use segmental_curves, only : max_seg_points, max_seg_curves
 c
@@ -1384,7 +1390,7 @@ c
       integer :: elem_type, surf, k, j, i, matl_no
       logical ::local_debug, update, update_coords, middle_surface
       double precision ::
-     &   half, zero, one, mag, mags(3), djcoh(mxvl)
+     &   half, zero, one, djcoh(mxvl)
       data local_debug, half, zero, one
      &  / .false., 0.5d00, 0.0d00, 1.0d00 /
 
@@ -1532,16 +1538,16 @@ c
       hist_size = local_work%hist_size_for_blk
 c
       call dptstf_copy_history(
-     &  local_work%elem_hist(1,1,1), history_blocks(blk)%ptr(1),
+     &  local_work%elem_hist(1,1,1), history_blocks(blk)%ptr,
      &            ngp, hist_size, span )
 c
-      call recstr_gastr( local_work%ddtse, eps_n_blocks(blk)%ptr(1),
+      call recstr_gastr( local_work%ddtse, eps_n_blocks(blk)%ptr,
      &                   ngp, nstr, span )
-      call recstr_gastr( local_work%strain_n, eps_n_blocks(blk)%ptr(1),
+      call recstr_gastr( local_work%strain_n, eps_n_blocks(blk)%ptr,
      &                   ngp, nstr, span )
 c
       call recstr_gastr( local_work%urcs_blk_n,
-     &                   urcs_n_blocks(blk)%ptr(1),
+     &                   urcs_n_blocks(blk)%ptr,
      &                   ngp, nstrs, span )
 c
 c
@@ -1812,7 +1818,6 @@ c
       subroutine recstr_build_cohes_nonlocal( local_work, iprops  )
 
       use elem_block_data, only:  solid_interface_lists
-      use main_data, only:  nonlocal_analysis
 c
       implicit none
       include 'param_def'
@@ -2151,8 +2156,6 @@ c           local declarations
 c
       integer :: blk, span, felem, rel_elem, i
       logical :: local_debug
-      double precision :: zero
-
 c
 c           given solid element, build 2D arrays of strain-stress
 c           values at integration points. use service routine
@@ -2169,10 +2172,10 @@ c
       ngp_solid = iprops(6,solid_elem)  ! note -- returned
 c
       call recstr_copy_results( rel_elem, stress_n(1,1),
-     &          urcs_n_blocks(blk)%ptr(1), nstrs, ngp_solid, span )
+     &          urcs_n_blocks(blk)%ptr, nstrs, ngp_solid, span )
 c
       call recstr_copy_results( rel_elem, eps_n(1,1),
-     &          eps_n_blocks(blk)%ptr(1), nstr, ngp_solid, span )
+     &          eps_n_blocks(blk)%ptr, nstr, ngp_solid, span )
 c
       if( local_debug ) then
         write(out,9000) solid_elem, blk, span, felem, rel_elem,
@@ -2263,3 +2266,84 @@ c
 c
       return
       end
+c     ****************************************************************
+c     *                                                              *
+c     *                subroutine recstr_setup_displ_grad_nis        *
+c     *                                                              *
+c     *                       written by : rhd                       *
+c     *                                                              *
+c     *                   last modified : 9/15/2018 rhd              *
+c     *                                                              *
+c     ****************************************************************
+c
+c
+      subroutine recstr_setup_displ_grad_nis( nowstep, iter )
+      use global_data, only : nelblk, elblks, out, iprops! old common.main
+      use elem_block_data,  only : initial_state_data
+      use main_data, only: initial_state_option
+c
+      implicit none
+c
+c              parameters
+c
+      integer :: nowstep, iter
+c
+c              locals
+c
+      integer :: alloc_stat, blk, felem, span, ngp
+      double precision, parameter :: zero = 0.0d0
+c
+c              setup per block data structures to support the
+c              user-defined initial state as requested by user.
+c              skip if already allocated.
+c
+c              MPI: this code is already running on the ranks. the
+c                   data structures follow the per block model. only
+c                   blocks on this rank are created. easy check here
+c                   using the eps_blk_list vector - has flag for
+c                   blocks on this rank. for threads only, all blocks.
+c
+      if( .not. initial_state_option ) return
+      if( iter == 0 ) return
+      if( allocated( initial_state_data ) ) return
+c
+      allocate( initial_state_data(nelblk), stat=alloc_stat )
+      if ( alloc_stat .ne. 0 ) then
+           write(out,9900); write(out,9910)
+           call die_abort
+      end if
+c
+      associate( x => initial_state_data )
+c
+      do blk = 1, nelblk
+c
+        felem      = elblks(1,blk)
+        span       = elblks(0,blk)
+        ngp        = iprops(6,felem)
+c
+c             plastic work densities
+c
+        allocate( x(blk)%W_plastic_nis_block(span,ngp),
+     &            stat = alloc_stat )
+        if ( alloc_stat .ne. 0 ) then
+           write(out,9900); write(out,9910)
+           call die_abort
+        end if
+c
+        x(blk)%W_plastic_nis_block  = zero
+c
+      end do
+
+      end associate
+c
+      return
+
+ 9900 format('>>> FATAL ERROR: memory allocate failure in routine:',
+     &  /,   '                 recstr_setup_displ_grad_nis' )
+ 9910 format('>>> Job terminated....')
+c
+      end
+
+
+
+

@@ -19,7 +19,7 @@ c     *                      subroutine mm10                         *
 c     *                                                              *
 c     *                       written by : mcm                       *
 c     *                                                              *
-c     *                   last modified: 10/8/2016 rhd               *
+c     *                   last modified: 1/10/2019 rhd               *
 c     *                                                              *
 c     *              crystal plasticity stress-strain update         *
 c     *                                                              *
@@ -58,13 +58,13 @@ c
       type(crystal_state) :: cc_n, cc_np1
 c
       integer :: i, c, now_element, iloop, number_crystals, crys_no
-      double precision :: sig_avg(6), se(6), p_strain_ten_c(6),
+      double precision :: sig_avg(6), p_strain_ten_c(6),
      &                    p_strain_ten(6),
      &                    tang_avg(6,6), tang_avg_vec(36), ! see equiv
      &                    slip_avg(length_comm_hist(5))
       double precision :: t_work_inc, p_work_inc,p_strain_inc,
      &                    n_avg, p_strain_avg
-      logical :: debug, gpall, locdebug, mat_debug
+      logical :: debug, locdebug, mat_debug
       equivalence( tang_avg, tang_avg_vec )
 c
       debug = .false.
@@ -75,7 +75,7 @@ c              we have data passed for integration point # gp for
 c              all (span) elements in this block. the CP updating
 c              routines process only a single int point. loop to
 c              process that point for all elements in block.
-c
+c 
 c              for small strain analysis, rot_blk_n1 set to identity
 c              now by warp3d.
 c
@@ -119,16 +119,16 @@ c              initialize G,H arrays for certain CP constitutive
 c              models. Note: all crystals in the element block
 c              will have the same hardening model and slip systems
 c
-      call mm10_set_cons( local_work, cc_props, 1, iloop, c )
+          call mm10_set_cons( local_work, cc_props, 1, iloop, c )
           if( locdebug ) write(iout,*) "Setting up properties"
           call mm10_a_do_crystal
-          if( local_work%material_cut_step ) then
-            return
-          end if
+          if( local_work%material_cut_step ) return
+c
 c              release allocated G & H arrays for
 c              certain CP constitutive models
 c
-      call mm10_set_cons( local_work, cc_props, 2, iloop, c )
+          call mm10_set_cons( local_work, cc_props, 2, iloop, crys_no )
+c          
         end do ! over crystals
 c
 c              finalize averages over all crystals at point.
@@ -216,7 +216,11 @@ c
      &              local_work%angle_convention(iloop),
      &              local_work%debug_flag(iloop), cc_props )
       cc_props%out = iout
+      six_plus_num_hard = 6 + cc_props%num_hard
+      size_num_hard     = cc_props%num_hard
+      size_nslip        = cc_props%nslip
 c
+      
       if( local_work%step .eq. 1 ) then
          user_initial_stresses(1:6) =
      &            local_work%urcs_blk_n(iloop,1:6,gp)
@@ -361,7 +365,7 @@ c     *                 subroutine mm10_set_cons                     *
 c     *                                                              *
 c     *                       written by : tjt                       *
 c     *                                                              *
-c     *                   last modified: 9/30/2016 rhd               *
+c     *                   last modified: 1/10/2019 rhd               *
 c     *                                                              *
 c     *       set interaction matrices G & H for slip system type    *
 c     *       used for this element block                            *
@@ -385,7 +389,7 @@ c
       h_type  = local_work%c_props(i, c)%h_type
       s_type1 = local_work%c_props(i, c)%s_type
       n_hard  = local_work%c_props(i, c)%num_hard
-c
+c      
       process_G_H = ( h_type .eq. 4 ) .or.
      &              ( h_type .eq. 7 ) .or.
      &              ( h_type .eq. 8 ) .or.
@@ -423,8 +427,8 @@ c       Armstrong-Frederick
               write(*,*) ' error allocating G matrix'
               call die_gracefully
            end if
-           call mm10_DJGM_GH(local_work,s_type1,n_hard,
-     &               cc_props%Gmat, cc_props%Hmat,i,c)
+          call mm10_DJGM_GH( local_work, s_type1, n_hard,
+     &               cc_props%Gmat, cc_props%Hmat, i, c )
          case( 2 ) ! deallocate G,H matrices
            deallocate( cc_props%Gmat, cc_props%Hmat )
          case default
@@ -443,8 +447,8 @@ c
               write(*,*) ' error allocating G matrix'
               call die_gracefully
            end if
-           call mm10_DJGM_GH(local_work,s_type1,n_hard,
-     &               cc_props%Gmat, cc_props%Hmat,i,c)
+           call mm10_DJGM_GH( local_work, s_type1, n_hard,
+     &               cc_props%Gmat, cc_props%Hmat, i, c )
          case( 2 ) ! deallocate G,H matrices
            deallocate( cc_props%Gmat, cc_props%Hmat )
          case default
@@ -482,7 +486,7 @@ c
       double precision :: history(span,*), angles(*),
      &                    user_initial_stresses(*)
 c
-      integer :: a, sh, eh, sh2, eh2, len1, len2
+      integer :: sh, eh, sh2, eh2, len1, len2
       double precision :: work_hist1(hist_size),
      &                    work_hist2(hist_size) ! automatics
 c
@@ -648,7 +652,7 @@ c     *                 subroutine mm10_tangent                      *
 c     *                                                              *
 c     *                       written by : mcm                       *
 c     *                                                              *
-c     *                   last modified: 10/10/2016 rhd              *
+c     *                   last modified: 1/17/2019 rhd               *
 c     *                                                              *
 c     *     get consistent tangent after a converged stress update.  *
 c     *                                                              *
@@ -668,39 +672,39 @@ c
       integer :: gaspt, nrJmat, ncJmat  ! nr=nc = 6 + props%num_hard
       double precision, dimension(nrJmat,ncJmat) :: Jmat
 c
-c
 c                 locals
 c
       integer :: len, i, info, gpp
       logical :: debug, gpall, locdebug
-      double precision, dimension(6,6) :: J11, JJ, JR, JA, JB, JK
-      double precision, dimension(6) :: d_mod, d_barp, tw, work_vec
-      double precision, dimension(6,props%num_hard) :: ed, J12
-      double precision, dimension(props%num_hard,6) :: J21
-      double precision, dimension(props%num_hard,12) :: beta
-
-c
-c                 automatic vectors-arrays
-c
-
-      integer, dimension(props%num_hard) :: ipiv
-      double precision, dimension(6,props%nslip) :: symtqmat
-      double precision, dimension(6,props%nslip) :: dgammadd
-      double precision,
-     &    dimension(props%num_hard,props%num_hard) :: J22, alpha
-      double precision :: alpha1
-c!DIR$ ASSUME_ALIGNED Jmat:64
+      double precision, dimension(6,6) :: J11, JJ, JR, JA, JB
+      double precision, dimension(6) :: work_vec
+      double precision, allocatable :: ed(:,:), J12(:,:), J21(:,:),
+     &          ipiv(:), symtqmat(:,:), dgammadd(:,:),
+     &          J22(:,:), alpha(:,:), beta(:,:)
 c
       debug    = .false.     ! props%debug
       gpall    = props%gpall ! print iteration norms for all int points
       gpp      = props%gpp   ! set one particular G.P. to print
       locdebug = .false.
+      
+      len = props%num_hard
+      if( len .ne. size_num_hard ) then !sanity check
+          write(*,9000) len, size_num_hard
+          call die_abort ! really fouled up if this happens
+      end if
+c      
+      allocate( ed(6,len), J12(6,len) )
+      allocate( J21(len,6) )
+      allocate( ipiv(max(len,6)) ) ! used in 2 different DGESV calls
+      allocate( symtqmat(6,size_nslip), dgammadd(6,size_nslip) )
+      allocate( J22(len,len) )
+      allocate( alpha(len,len) )
+      allocate( beta(len,12) )
 c
       call mm10_a_zero_vec( np1%tangent, 36 )
 c
 c              pull Jacobian from solver evaluation
 c
-      len              = props%num_hard
       J11(1:6,1:6)     = Jmat(1:6,1:6)
       J12(1:6,1:len)   = Jmat(1:6,7:6+len)
       J21(1:len,1:6)   = Jmat(7:6+len,1:6)
@@ -773,21 +777,28 @@ c              JA = JA +  work_vec * trans(dgammadd(:,i))
        call mm10_a_mult_type_5( JA, work_vec, dgammadd(1,i) )
       end do
 c
+      deallocate( symtqmat, dgammadd )
+c
 c              compute tangent matrix T where
 c                     T = JJ^-1*JR
 c                    JR = (Cijkl - JA - JB)
 c                    JJ = J11 - J12*J22^-1*J21
 c                    JB = J12*J22^-1*ed
 c
-      call mm10_a_copy_vector( JJ, J11, 36 )  ! JJ = J11 (6 x 6)
-      call mm10_a_copy_vector( alpha, J22, len*len )   ! len x len
+      JJ = J11    ! 6 x 6 
+      alpha = J22 ! len x len
       call mm10_a_copy_vector( beta, J21, len*6 )  ! beta = J21
       call mm10_a_copy_vector( beta(1,7), ed, len*6 )
       if( locdebug ) write (*,*) "beta", beta(1:6,1:12) ! beta = ed
+      deallocate( ed )
+c      
 c
 c              compute J22^-1*J21 and J22^-1*ed
 c
       call DGESV( len, 2*6, alpha, len, ipiv, beta, len, info )
+      deallocate( alpha )
+      deallocate( J21 )
+      deallocate( J22 )
 c
 c              JJ = JJ - J12*beta(*,1:6)   [ JJ 6x6 ]
 c
@@ -796,9 +807,12 @@ c
      &             one, JJ, 6 )
 c
 c
-      call mm10_a_zero_vec( JB, 36 )
+      call mm10_a_zero_vec( JB, 36 ) ! not really needed
       call DGEMM ('N','N', 6 ,6, len, one, J12, 6, beta(1,7),
-     &             len, one, JB, 6 )  ! make JB 6 x
+     &             len, zero, JB, 6 )  ! make JB 6 x 6
+      deallocate( J12 )
+      deallocate( beta )
+c    
       if( debug ) write (*,*) "JB", JB(1,2)
 c
       JR = props%stiffness - JA - JB  ! 6 x 6
@@ -807,12 +821,18 @@ c              np1%tangent = matmul(JJ, JR)
 c              avoid explicitly computing the inverse
 c
       call DGESV( 6, 6, JJ, 6, ipiv, JR, 6, info )
+      deallocate( ipiv )
+c      
       call mm10_a_copy_vector( np1%tangent, JR, 36 )
+c      
       if( locdebug ) write (*,*) "JR", JR(1:6,1:6)
 c
       return
+c
+ 9000 format('>> FATAL ERROR: mm10_tangent: ',2i10,
+     & /,14x,'job terminated.....')
+c     
       end subroutine
-
 c
 c     ****************************************************************
 c     *                                                              *
@@ -836,7 +856,7 @@ c
 c
 c              locals
 c
-      integer :: i, j, k, s, t
+      integer :: i, t
       double precision :: RE(6,6), rw(3,3), rwc(3,3), trans_nRp(3,3),
      &                    curv(3,3,3), cn(3), tm(3), const, t1, t2,
      &                    work(3,3), work_vec(3)
@@ -1069,7 +1089,7 @@ c     *                 subroutine mm10_solve_crystal                *
 c     *                                                              *
 c     *                       written by : mcm                       *
 c     *                                                              *
-c     *                   last modified: 10/5/2016 rhd               *
+c     *                   last modified: 1/17/2019 rhd               *
 c     *                                                              *
 c     *     Advance a crystal from n to np1, store tangent, and      *
 c     *     store other output                                       *
@@ -1105,15 +1125,15 @@ c
 
       if( cut ) then ! somehow we got back into this routine
                      ! after one crystal failed already
-         write(iout,*) "mm10 returned for crystal solve after
-     & another crystal failed!"
+         write(iout,*) "mm10 returned for crystal solve after ",
+     &                 "another crystal failed!. terminated"
             call die_gracefully ! segmentation faults will follow if not stopped here
       end if
 
       nrJmat = 6 + props%num_hard
       ncJmat = 2 * nrJmat ! extra space needed for Broyden solver
       allocate( Jmat(nrJmat,ncJmat) )
-
+c     
       call mm10_solve_strup( props, np1, n, vec1, vec2, arr1, arr2,
      &   ivec1, ivec2, cut, gp, iter_0_extrapolate_off, no_load,
      &   Jmat, nrJmat, ncJmat )
@@ -1133,6 +1153,8 @@ c
           return
       end if
 c
+!      write(iout,*) '...  props%num_hard,size_num_hard: ',
+!     &    props%num_hard, size_num_hard 
       call mm10_tangent( props, np1, n, gp, Jmat, nrJmat, ncJmat )
 c
 c              make tangent symmetric
@@ -1176,8 +1198,7 @@ c
       type (crystal_state) :: n, np1
 c
       double precision, dimension(3,3) :: full_rot, work1
-      double precision :: psiK, phiK, thetaK, psi, phi, theta,
-     &                    pps, pms
+      double precision :: psiK, phiK, thetaK, psi, phi, theta
       double precision, external :: mm10_atan2
       double precision, parameter :: tol=1.0d-16
 c
@@ -1193,14 +1214,14 @@ c
       if( full_rot(3,3) .gt. one ) full_rot(3,3) = one
       thetaK = dacos( full_rot(3,3) )
 
-      if( props%angle_convention .eq. 1 ) then
-        psi = psiK
-        phi = phiK
-        theta = thetaK
-      else
-        write (props%out,*) "Angle convention not implemented."
-        call die_gracefully
+      if( props%angle_convention .ne. 1 ) then
+         write (props%out,*) "Angle convention not implemented."
+         call die_gracefully
       end if
+c      
+      psi = psiK
+      phi = phiK
+      theta = thetaK
 c
       if( props%angle_type .eq. 1) then
         np1%euler_angles(1) = one_eighty/pi*psi
@@ -1292,6 +1313,7 @@ c
       character, intent(in) :: atype*7
       integer, intent(in) :: out
 c
+      logical :: ok
       double precision, dimension(3,3), intent(out) :: r
       double precision :: a, b, c, psi, theta, phi
 c!DIR$ ASSUME_ALIGNED angles:64, r:64
@@ -1300,19 +1322,24 @@ c
       b = angles(2)
       c = angles(3)
 c
-      if( atype .eq. 'degrees' ) then
+      ok = (atype .eq. 'degrees')  .or.  (atype .eq. 'radians')
+      if( .not. ok ) then
+           write(out,9000)
+           call die_abort
+      end if
+
+      if( atype .eq. 'degrees' ) then ! radians no convert needed
          a = a*pi/one_eighty
          b = b*pi/one_eighty
          c = c*pi/one_eighty
-      elseif (atype .eq. 'radians') then ! no conversion needed
-      else
-         write(out,9000)
       end if
-
+c
+      psi   = a
+      theta = b
+      phi   = c
+c
       if( aconv .eq. 'kocks' ) then
-         psi   = a
-         theta = b
-         phi   = c
+         continue
       elseif( aconv .eq. 'bunge' ) then
          psi   = a - pi/two
          theta = b
@@ -1323,6 +1350,7 @@ c
          phi   = three*pi/two - c
       else
          write (out,9001)
+         call die_abort
       end if
 c
       r(1,1) = -sin(psi)*sin(phi)-cos(psi)*cos(phi)*cos(theta)
@@ -1337,9 +1365,10 @@ c
 c
       return
 c
- 9000 format(/'danger: unknown angle type passed to rotation_matrix'/)
- 9001 format(/'danger: unknown angle convention passed to',
-     &        ' rotation_matrix'/)
+ 9000 format(/'Fatal error: routine mm10_rotation_matrix.',
+     & /,14x,  'unknown angle type passed to rotation_matrix'/)
+ 9001 format(/'Fatal error:: routine mm10_rotation_matrix.',
+     & /,14x,'unknown angle convention passed to rotation_matrix'/)
 c
       end
 c
@@ -1568,7 +1597,7 @@ c
      &                    onerot(9), local_jac(3,3), local_Rps(9),
      &                    grads_vec(27)
       equivalence( grads, grads_vec )
-      double precision :: weight, fact
+      double precision :: weight
 c
 c                 constants
 c
@@ -1798,7 +1827,7 @@ c     *                 subroutine mm10_init_cc_props                *
 c     *                                                              *
 c     *                       written by : mcm                       *
 c     *                                                              *
-c     *                   last modified: 9/30/2016 rhd               *
+c     *                   last modified: 1/10/2019 rhd               *
 c     *                                                              *
 c     *    Copy properties over from local_work into the update      *
 c     *    structure                                                 *
@@ -1991,7 +2020,6 @@ c
      &                         3*max_slip_sys )
       call mm10_a_copy_vector( cc_props%stiffness,
      &                         inc_props%init_elast_stiff, 36 )
-c
       return
       end subroutine
 
@@ -2008,7 +2036,7 @@ c
       implicit none
 c
       type(crystal_props) :: props
-      double precision, dimension(props%num_hard) :: tau_tilde
+      double precision, dimension(size_num_hard) :: tau_tilde
       double precision, dimension(max_uhard) :: uhist
 c
       write (props%out,*) "Not implemented"
@@ -2213,7 +2241,7 @@ c
       implicit none
 c
       type(crystal_props) :: props
-      double precision :: tau_tilde(props%num_hard)
+      double precision :: tau_tilde(size_num_hard)
       double precision, dimension(max_uhard) :: uhist
 c
 c
@@ -2287,7 +2315,7 @@ c
       implicit none
 c
       type(crystal_props) :: props
-      double precision :: tau_tilde(props%num_hard)
+      double precision :: tau_tilde(size_num_hard)
       double precision, dimension(max_uhard) :: uhist
 c
 c              initial densities for edges
@@ -2331,7 +2359,7 @@ c
       implicit none
 c
       type(crystal_props) :: props
-      double precision :: tau_tilde(props%num_hard)
+      double precision :: tau_tilde(size_num_hard)
       double precision, dimension(max_uhard) :: uhist
 c
       if( props%s_type .eq. 9 ) then
@@ -2384,7 +2412,7 @@ c
       implicit none
 c
       type(crystal_props) :: props
-      double precision :: tau_tilde(props%num_hard)
+      double precision :: tau_tilde(size_num_hard)
       double precision, dimension(max_uhard) :: uhist
 c
       if( props%s_type .eq. 7 ) then !bcc12
@@ -2617,7 +2645,7 @@ c     *                 subroutine mm10_solve_strup                  *
 c     *                                                              *
 c     *                       written by : mcm                       *
 c     *                                                              *
-c     *                   last modified: 10/5/2016 rhd               *
+c     *                   last modified: 1/17/2019 rhd               *
 c     *                                                              *
 c     *     Solve the stress update adaptively (if required)         *
 c     *                                                              *
@@ -2647,29 +2675,29 @@ c
 c              locals
 c
       type(crystal_state) :: curr
-      integer :: cuts, i, gpp,  faili(10), len1
-      double precision :: stress(6), ostress(6), R1(6), frac, step,
-     &                    failr(10), temp1, temp2
+      integer :: cuts, gpp,  faili(10), len1
+      double precision :: frac, step, temp1, temp2
+      double precision, allocatable :: stress(:), ostress(:), R1(:),
+     &                    failr(:), tt(:), ott(:)
       logical :: debug, gpall, locdebug
-c
-c              automatic vectors
-c
-      double precision :: tt(props%num_hard), ott(props%num_hard)
-c
       double precision, parameter :: mult = 0.5d0
       integer, parameter :: mcuts = 4
-c!DIR$ ASSUME_ALIGNED vec1:64, vec2:64, arr1:64, arr2:64, Jmat:64
+      integer, save :: passno = 0 ! for debuggin use
 c
+      passno   = passno + 1
       debug    = props%debug
       gpall    = props%gpall ! true to print iteration norms all GPs
       gpp      = props%gpp   ! set one particular G.P. to print
       locdebug = .false.
 c
+      len1         = props%num_hard
+      allocate( tt(len1), ott(len1) )
+      allocate( stress(6), ostress(6), R1(6), failr(10) )
+c
       frac = zero
       step = one
       cuts = 0
 c
-      len1         = props%num_hard
       stress(1:6)  = n%stress(1:6)
       ostress(1:6) = stress(1:6)
       call mm10_a_copy_vector( tt, n%tau_tilde, len1 )
@@ -2705,7 +2733,7 @@ c
 c              update stress, state variables using usual material
 c              N-R solvers
 c
-        call mm10_solve_strup_iterate
+        call mm10_solve_strup_iterate  ! clobbers both ott or tt
         if( fail ) return
 c
       end if
@@ -2715,15 +2743,22 @@ c
       call mm10_a_copy_vector( np1%tt_rate, curr%tt_rate, max_uhard )
 c
       if( locdebug ) then
-           write(props%out,*) " stress(2)=", stress(2),
-     &                        " np1%stress=", np1%stress(2)
-           write(props%out,*) "  tt=", tt(1), " np1%tau_tilde =",
-     &                        np1%tau_tilde(1)
-           write(props%out,*) " np1%tt_rate =", np1%tt_rate(1)
+         write(props%out,*) " stress(2)=", stress(2),
+     &                      " np1%stress=", np1%stress(2)
+         write(props%out,*) "  tt=", tt(1), " np1%tau_tilde =",
+     &                      np1%tau_tilde(1)
+         write(props%out,*) " np1%tt_rate =", np1%tt_rate(1)
       end if
 c
+      deallocate( tt )             ! separate so can find bad ones
+      deallocate( ott )
+      deallocate( stress )
+      deallocate( ostress )
+      deallocate( R1 )
+      deallocate( failr )
+c  
       return
-
+c
       contains  ! for mm10_solve_strup
 c
 c              ****************************************************
@@ -2735,15 +2770,16 @@ c
 c
       call mm10_a_copy_vector( np1%tangent, props%stiffness, 36 )
       if( .not. no_load ) then
-          call mm10_formvecs( props, np1, n, stress, tt, vec1, vec2 )
-          call mm10_formR1( props, np1, n, vec1, vec2, stress, tt,
-     &                      R1, gp)
-          stress(1:6) = stress(1:6) - R1(1:6)
+        call mm10_formvecs( props, np1, n, stress, tt, vec1, vec2 )
+        call mm10_formR1( props, np1, n, vec1, vec2, stress,
+     &                    tt, R1, gp )
+        stress(1:6) = stress(1:6) - R1(1:6)
       end if
 c
 c              ensure that zero rates are set, though this value
 c              should not be kept in warp3d history during
 c              extrapolaion anyway
+c
         curr%tt_rate = zero
 c
       return
@@ -2758,15 +2794,18 @@ c
       implicit none
 c
       logical :: solver_failed
-      double precision :: D_work(6), tinc_work, temp_work
+      double precision :: tinc_work, temp_work
+      double precision, allocatable :: D_work(:)
 c
       do while( frac .lt. one )
 c
+        allocate( D_work(6) )  ! for detecting vector overwrites
         D_work(1:6) =  np1%D*(step+frac)
         tinc_work = np1%tinc*(step+frac)
         temp_work = (np1%temp-n%temp)*(step+frac)+n%temp
         call mm10_setup_np1( np1%R, D_work, tinc_work, temp_work,
      &                   np1%step, np1%elem, np1%iter, np1%gp, curr)
+        deallocate( D_work )
 c
         call mm10_setup( props, curr, n )
 c
@@ -2783,6 +2822,7 @@ c
      &             ivec1, ivec2, stress, tt, fail, faili, failr, gp,
      &             np1%tinc*step, Jmat )
         end if
+c        
         if( fail ) then
           if( locdebug ) write(props%out,*) "Adapting"
           stress(1:6) = ostress(1:6)
@@ -2849,7 +2889,7 @@ c     *                 subroutine mm10_solve                        *
 c     *                                                              *
 c     *                       written by : mcm                       *
 c     *                                                              *
-c     *                   last modified: 10/6/2016 rhd               *
+c     *                   last modified: 1/17/2018 rhd               *
 c     *                                                              *
 c     *     Solve a stress update to prescribed strain state         *
 c     *                                                              *
@@ -2870,7 +2910,7 @@ c
 c
       integer :: gp, faili(10), nrJ, ncJ
       double precision :: dtinc
-      double precision :: stress(6), tt(props%num_hard), failr(10)
+      double precision :: stress(6), tt(size_num_hard), failr(10)
       double precision, dimension(max_uhard) :: vec1,vec2
       double precision, dimension(max_uhard,max_uhard) :: arr1, arr2
       complex(kind=real64), dimension(max_uhard) :: ivec1, ivec2
@@ -2880,26 +2920,23 @@ c
 c
 c                 locals
 c
-      integer :: iter, miter, info, ls, gpp, ttind, maxfev,
-     &           nfev, njev, i
-      double precision :: nR, inR, atol, rtol, uB, alpha, ls1, ls2,
+      integer :: iter, miter, info, ls, gpp, ttind, maxfev, kk
+      double precision :: nR, inR, atol, rtol, alpha, ls1, ls2,
      &                    nlsx, nRs, dt, cos_ang, xetol, xtol1,
-     &                    zerotol, dxerr, nR1, inR1, atol1, rtol1,
-     &                    factor, mm10_enorm, t1, t2, dtrace,
-     &                    stepmx
+     &                    dxerr, nR1, inR1, atol1, rtol1,
+     &                    t1, t2, dtrace
 c
-      double precision, dimension(6,6) :: J11
+      double precision, allocatable :: J11(:,:)
 c
       double precision, dimension(6) :: R1, x1, dx1, xnew1, d1, d2
-      logical :: debug, gpall, solver, strategy, locdebug
+      logical :: debug, gpall, solver, strategy, locdebug, ok
 c
 c                 automatic vectors-arrays
 c
-      double precision, dimension(6+props%num_hard) :: R, x, dx,
-     &                xnew, g, work_vec1
-      integer, dimension(6+props%num_hard) :: ipiv
-      double precision, dimension(props%num_hard) :: x2
-      double precision :: trans_J(ncJ,nrJ), minus_J(nrJ,ncJ)
+      integer, allocatable :: ipiv(:)
+      double precision, allocatable :: minus_J(:,:), work_vec1(:),
+     &                                 x2(:), R(:), x(:), dx(:),
+     &                                 xnew(:)
 c
 c                 constants
 c
@@ -2907,12 +2944,21 @@ c
      &                               xtol = 0.001d0
       integer, parameter :: mls = 10, mmin = 1
 c
-c!DIR$ ASSUME_ALIGNED vec1:64, vec2:64, arr1:64, arr2:64
-c!DIR$ ASSUME_ALIGNED ivec1:64, ivec2:64, stress:64, tt:64, J:64
-c!DIR$ ASSUME_ALIGNED trans_J:64, minus_J:64
-c
       locdebug = .false.
       if( locdebug ) write(*,*) "Entering mm10_solve"
+      ok = .true.
+      if( nrJ .ne. six_plus_num_hard ) ok = .false. ! sanity cehck
+      if( .not. ok ) then
+         write(*,*) '... @ 1: ',ncJ, nrJ, six_plus_num_hard
+         call die_abort
+      end if
+c
+      kk = six_plus_num_hard   ! just to reduce name length
+      allocate( J11(6,6) )
+      allocate( minus_J(nrJ,ncJ) )
+      allocate( ipiv(six_plus_num_hard) )
+      allocate( x2(size_num_hard) )
+      allocate( R(kk), x(kk), dx(kk), xnew(kk), work_vec1(kk) )
 c
       atol    = props%atol
       atol1   = props%atol1
@@ -2962,6 +3008,16 @@ c
       stress(1:6) = x(1:6)
       tt(1:props%num_hard) = x(7:6+props%num_hard)
 c
+      deallocate( J11 )     ! separate to detect potential overwrites
+      deallocate( minus_J )
+      deallocate( ipiv )
+      deallocate( x2 )
+      deallocate( R )
+      deallocate( x )
+      deallocate( dx )
+      deallocate( xnew )
+      deallocate( work_vec1 )
+c
       return
 c
       contains
@@ -2975,10 +3031,12 @@ c              ****************************************************
 c
       integer :: iout
       logical :: tan_mat_implemented
-      double precision :: dotR1, work_vec(6), minus_J11(6,6)
+      double precision :: dotR1
+      double precision, allocatable :: work_vec(:), minus_J11(:,:)
 c
       iout = props%out
       if( debug ) write(iout,*) "Entering stress prediction"
+      allocate( work_vec(6), minus_J11(6,6) )
       iter = 0
       x1   = x(1:6)
 c
@@ -3149,6 +3207,9 @@ c
       x(1:6)                = x1(1:6)
       x(7:6+props%num_hard) = x2(1:props%num_hard)
 c
+      deallocate( work_vec )
+      deallocate( minus_J11 )
+c
       return
 
       end subroutine mm10_solve_predict
@@ -3217,8 +3278,11 @@ c
        alpha     = one
        dotR      = dot_product( R, R )  ! R is not 6x1
        ls1       = half * dotR
-       trans_J   = transpose( J )  !   J is not 6x6
-       work_vec1 = matmul( trans_J, R ) ! eliminates repeated temps
+c
+c                    work_vec1 = trans( J ) * R  ---- watch sizes !
+c
+       call DGEMM( 'T', 'N', nrJ, 1, nrJ, one, J, nrJ, R, nrJ, zero,
+     &              work_vec1, nrJ )
        ls2       = c * dot_product( dx, work_vec1 )
 c
        ls = 0
@@ -3315,7 +3379,7 @@ c
       type(crystal_state) :: np1, n
 c
       double precision :: wbarp(3), wbarp_full(3,3), expw(3,3),
-     &                    vec1(max_uhard), vec2(max_uhard), w(3,3)
+     &                    vec1(max_uhard), vec2(max_uhard)
 c!DIR$ ASSUME_ALIGNED vec1:64, vec2:64
 c
       call mm10_form_wbarp( props, np1, n, vec1, vec2, np1%stress,
@@ -3384,7 +3448,6 @@ c
       double precision, dimension(3,3), intent(in) :: w
       double precision, dimension(3,3), intent(out) :: a
       double precision :: alpha
-      integer :: i
 c!DIR$ ASSUME_ALIGNED w:64, a:64
 c
 c              compute alpha
@@ -3398,7 +3461,7 @@ c
         a = zero
       else
         a = w
-        call dgemm( 'N', 'N', 3, 3, 3, (one-dcos(alpha))/alpha**2,
+        call DGEMM( 'N', 'N', 3, 3, 3, (one-dcos(alpha))/alpha**2,
      &              w, 3, w, 3, sin(alpha)/alpha, a, 3 )
       end if
 c
@@ -3508,11 +3571,12 @@ c     Compute manually
             ed = ed + dif_slp(i)*np1%ms(1:6,i)
           end do
 c     Isotropic diffusion
-        work_vec1 = zero
-	if ( abs(props%cp_031-one)<1.0e-5 ) then
-	  call mm10_halite_formRpp( props, work_vec1, np1%stress, np1%tinc )
-          ed = ed - work_vec1 ! Ran's value is negative
-	end if
+      work_vec1 = zero
+      if ( abs(props%cp_031-one)<1.0e-5 ) then
+       call mm10_halite_formRpp( props, work_vec1, 
+     &                           np1%stress, np1%tinc )
+       ed = ed - work_vec1 ! Ran's value is negative
+      end if
       np1%ed = ed / np1%tinc
 c          store the plastic strain increment for nonlocal averages
       t1 = ed(1)**2 + ed(2)**2 + ed(3)**2
@@ -3805,7 +3869,6 @@ c
       subroutine mm10_a_mult_type_2t( a, b, c )
       implicit none
       double precision :: a(6), b(6,6), c(6)
-      integer :: j
 c!DIR$ ASSUME_ALIGNED a:64, b:64, c:64
 c
 c                     a = trans( [b] ) * c
@@ -3958,8 +4021,8 @@ c
       subroutine mm10_a_copy_vector( a, b, nterms )
       implicit none
       integer :: nterms
-      double precision :: a(nterms), b(nterms), c(nterms)
-c!DIR$ ASSUME_ALIGNED a:64, b:64, c:64
+      double precision :: a(nterms), b(nterms)
+c!DIR$ ASSUME_ALIGNED a:64, b:64
 c
       a = b
 c

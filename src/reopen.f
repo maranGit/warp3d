@@ -4,7 +4,7 @@ c     *                      subroutine reopen                       *
 c     *                                                              *
 c     *                      written by : bh                         *
 c     *                                                              *
-c     *                   last modified : 2/10/2018 rhd              *
+c     *                   last modified : 11/26/2018 rhd             *
 c     *                                                              *
 c     *          read restart file. get solution start up            *
 c     *                                                              *
@@ -94,8 +94,13 @@ c
          go to 9999
       end if
 c
+#ifdef __INTEL_COMPILER
       open( fileno, file=dbname, status='old', access='sequential',
      &     form='unformatted', recordtype='segmented' )
+#else
+      open( fileno, file=dbname, status='old', access='sequential',
+     &     form='unformatted' )
+#endif
 c
 c                       rewind the data base to insure positioning
 c                       before the first record.
@@ -121,7 +126,7 @@ c
      &              crdtop, nummat, numcol, histep,
      &              lowstp, ltmstp, nlibel, numlod, mxiter,
      &              mniter, lodhed, lgnmcn, mxlitr,
-     &              nogp, nprs, nplrs, nelblk, numgrp, lgoump,
+     &              nprs, nplrs, nelblk, numgrp, lgoump,
      &              max_current_pts, max_current_curves,
      &              num_seg_curve_sets,
      &              solver_flag, old_solver_flag, solver_memory,
@@ -134,7 +139,8 @@ c
      &              initial_map_type, final_map_type,
      &              coarsening, agg_levels, interpolation, relaxation,
      &              sweeps, cf, cycle_type, max_levels,
-     &              one_crystal_hist_size, common_hist_size
+     &              one_crystal_hist_size, common_hist_size,
+     &              initial_state_step, mxnmbl
       call chk_data_key( fileno, 1, 0 )
       call mem_allocate( 4 ) ! vectors based on # nodes
 c
@@ -153,6 +159,7 @@ c
      &             sparse_stiff_binary, sparse_research,
      &             solver_mkl_iterative, output_packets,
      &             temperatures_ref, fgm_node_values_defined,
+     &             fgm_node_values_used,
      &             hyp_trigger_step, hyp_first_solve,
      &             time_assembly, parallel_assembly_allowed,
      &             parallel_assembly_used,
@@ -161,14 +168,13 @@ c
      &             extrapolate, extrap_off_next_step,
      &             divergence_check, diverge_check_strict,
      &             line_search, ls_details, initial_stresses_exist,
-     &             initial_stresses_user_routine
+     &             initial_stresses_user_routine,
+     &             initial_state_option, initial_stresses_input
       read(fileno) sparse_stiff_file_name, packet_file_name,
      &             initial_stresses_file
       call chk_data_key( fileno, 1, 1 )
 c
-c
 c                       read in double precision variables.
-c
 c
       read(fileno) dt,nbeta,emax,fmax,prdmlt,total_mass,ext_work,
      &             beta_fact,total_model_time,scaling_adapt,eps_bbar,
@@ -198,14 +204,12 @@ c
       call init_maps( fileno, 2 )
       call rdbk( fileno, plrlst, mxlsz )
       call rdbk( fileno, stprng, mxlc*2 )
-      call rdbk( fileno, gpmap,  nogp )
       call mem_allocate( 9 )
       call rdbk( fileno, incmap, noelem )
       call mem_allocate( 14 )
       call rdbk( fileno, crdmap, nonode )
       call rdbk( fileno, dstmap, nonode )
       call rdbk( fileno, cstmap, nodof )
-      call rdbk( fileno, state, nogp )
       call rdbk( fileno, incid, inctop )
       call rdbk( fileno, prslst, mxlsz )
       call rdbk( fileno, lodlst, mxlc )
@@ -214,7 +218,8 @@ c
       call init_maps( fileno, 5 )
       call init_maps( fileno, 6 )
       call init_maps( fileno, 7 )
-      call rd2d( fileno, elblks(0,1) , 4, 4, nelblk )
+      call mem_allocate( 17 )
+      call rd2d( fileno, elblks(0,1) , 4, 4, mxnmbl )
       call rdbk( fileno, cp, mxedof )
       call rdbk( fileno, dcp, mxedof )
       call rd2d( fileno, icp, mxutsz, mxutsz, 2 )
@@ -240,6 +245,7 @@ c
 c
 c                       read real arrays.
 c
+      call mem_allocate( 11 )
       call rd2d( fileno, props, mxelpr, mxelpr, noelem )
       call rd2d( fileno, matprp, mxmtpr, mxmtpr, mxmat )
       call rdbk( fileno, user_cnstrn_stp_factors, max_step_limit )
@@ -302,7 +308,6 @@ c
       call rotation_init( fileno, 2 )
       write(out,9060)
       call chk_data_key( fileno, 5, 1 )
-      call chk_data_key( fileno, 5, 2 )
       call strains_init( fileno, 2 )
       write(out,9080)
       call chk_data_key( fileno, 5, 3 )
@@ -711,6 +716,7 @@ c
      &         convergence_history(i)%adapt_substeps
       end do
       read(fileno) run_user_solution_routine
+      call chk_data_key( fileno, 15, 0 )
 c
 c                       get the release_cons_table if we have nodes
 c                       undergoing release operations
@@ -726,6 +732,7 @@ c
         end do
       end if
       write(out,9210)
+      call chk_data_key( fileno, 16, 0 )
 c
 c                       get output commands file ... information
 c                       save file name and bitmap list if it exists
@@ -736,6 +743,7 @@ c
         allocate( output_step_bitmap_list(local_length ) )
         read(fileno) output_step_bitmap_list
       end if
+      call chk_data_key( fileno, 17, 0 )
 c
 c                       get initial stress data
 c
@@ -744,6 +752,16 @@ c
         call rdbk( fileno, initial_stresses, prec_fact*noelem*6 )
         write(out,9230)
       end if
+      call chk_data_key( fileno, 18, 0 )
+c
+c                       get initial state arrays if they exist.
+c                       root gets all blocks.
+c
+      if( initial_state_option ) then
+          call initial_state_read( fileno )
+          write(out,9240)
+      end if
+      call chk_data_key( fileno, 19, 0 )
 c
 c                       USER routines data
 c
@@ -754,7 +772,7 @@ c                       read final check variable -- check if correct.
 c                       if not, the restored data is corrupted.
 c
 c
-      call chk_data_key( fileno, 15, 0 )
+      call chk_data_key( fileno, 20, 0 )
 c
 c
 c                       close the restart file
@@ -769,7 +787,6 @@ c                         send basic data, constraint data, and
 c                         analysis parameters data to the slave processors.
 c                         also send the element information to the
 c                         processor who owns the element.
-c                        Allocate the diagonal stiffness for non-MPI
 c
       call wmpi_send_basic
       call wmpi_send_const
@@ -778,8 +795,6 @@ c
       call wmpi_init_owner
       call wmpi_send_contact (.true.)
       call wmpi_send_crystals
-      if ( .not. use_mpi ) call mem_allocate ( 11 )
-
 c
 c                       initialize the adaptive algorithm so that
 c                       it can operate immediately if needed.
@@ -830,6 +845,7 @@ c
  9210 format(15x,'> convergence history read...')
  9220 format(15x,'> user routine data read...')
  9230 format(15x,'> initial stress data read...')
+ 9240 format(15x,'> initial state arrays read...')
       return
       end
 c     ****************************************************************
@@ -917,9 +933,7 @@ c
      &                            cep_blocks, cep_blk_list
 c
       implicit integer (a-z)
-      double precision
-     &    dummy(1)
-      integer matl_info(10)
+      double precision :: dummy(1)
       logical myblk
 c
 c
@@ -1030,15 +1044,15 @@ c
         end if
 c
         if ( proc_type .eq. 1 ) then
-          call ro_zero_vec( history_blocks(blk)%ptr(1), block_size )
-          call ro_zero_vec( history1_blocks(blk)%ptr(1), block_size )
+          call ro_zero_vec( history_blocks(blk)%ptr, block_size )
+          call ro_zero_vec( history1_blocks(blk)%ptr, block_size )
         end if
 c
         if ( proc_type .eq. 2 ) then
                read(fileno) history_blocks(blk)%ptr(1:block_size)
                call chk_data_key( fileno, 200, blk )
-               call vec_ops( history1_blocks(blk)%ptr(1),
-     &                       history_blocks(blk)%ptr(1),
+               call vec_ops( history1_blocks(blk)%ptr,
+     &                       history_blocks(blk)%ptr,
      &                       dummy, block_size, 5 )
         end if
 c
@@ -1647,6 +1661,76 @@ c
       end
 c     ****************************************************************
 c     *                                                              *
+c     *                subroutine initial_state_read                 *
+c     *                                                              *
+c     *                       written by : rhd                       *
+c     *                                                              *
+c     *                   last modified : 6/28/2018 rhd              *
+c     *                                                              *
+c     *     read element blocks of intiial state data                *
+c     *                                                              *
+c     ****************************************************************
+c
+      subroutine initial_state_read( fileno )
+      use global_data ! old common.main
+c
+      use elem_block_data, only : initial_state_data
+c
+      implicit none
+c
+      integer :: fileno
+c
+      integer :: alloc_stat, blk, felem, span, ngp
+c
+      if( allocated( initial_state_data ) ) then
+          write(out,9920)  ! should not happen  .....
+          call die_abort
+      end if
+c
+      allocate( initial_state_data(nelblk), stat=alloc_stat )
+      if( alloc_stat .ne. 0 ) then
+           write(out,9900); write(out,9910) 1
+           call die_abort
+      end if
+c
+c            loop over all element blocks. allocate blocks and
+c            read from restart file.
+c
+      associate( x => initial_state_data )
+c
+      do blk = 1, nelblk
+c
+        felem = elblks(1,blk)
+        span  = elblks(0,blk)
+        ngp   = iprops(6,felem)
+c
+c             plastic work densities
+c
+        allocate( x(blk)%W_plastic_nis_block(span,ngp),
+     &            stat = alloc_stat )
+        if( alloc_stat .ne. 0 ) then
+           write(out,9900); write(out,9910) 2
+           call die_abort
+        end if
+        read(fileno) x(blk)%W_plastic_nis_block
+        call chk_data_key( fileno, 390, blk )
+c
+      end do
+c
+      end associate
+c
+      return
+c
+ 9900 format('>>> FATAL ERROR: memory allocate failure...')
+ 9910 format('                 initial_state_read: @',i2,/,
+     &       '>>> Job terminated....')
+ 9920 format(/1x,'>>>>> error: routine initial_state_read ',
+     &   /1x,    '             inconsistency. job terminated...')
+c
+      end
+
+c     ****************************************************************
+c     *                                                              *
 c     *                      subroutine rotation_init                *
 c     *                                                              *
 c     *                       written by : rhd                       *
@@ -2211,7 +2295,7 @@ c
       end do
 c
       if( nonlocal_analysis ) then   ! inconsistency in data values
-        write(iout,9300)
+        write(out,9300)
         call die_abort
       end if
       return

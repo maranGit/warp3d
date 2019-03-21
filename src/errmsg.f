@@ -3,7 +3,7 @@ c     *                      suboutine errmsg                        *
 c     *                                                              *
 c     *                       written by : bh                        *
 c     *                                                              *
-c     *                   last modified : 2/8/2018 rhd               *
+c     *                   last modified : 12/14/2018 rhd             *
 c     *                                                              *
 c     *     this subroutine prints assorted error messages in re-    *
 c     *     ponse to calls from all over the program. virtually all  *
@@ -30,6 +30,8 @@ c
       integer, save :: high_lvl_count = 0
       logical, save :: mess_61, write_msg_255, write_msg_321
       integer, save :: count_150=0
+      integer, save :: count_136=0
+      integer, parameter :: id_pcm = 4hpcm  
       data hundred /100.0/
       data mess_61, write_msg_255, write_msg_321
      &     / .true., .true., .true. /
@@ -39,7 +41,6 @@ c                       print the appropriate error message as
 c                       indicated by the input variable errnum
 c
 c                       current holes:
-c
 c
       go to (10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,
      &       160,170,180,190,200,210,220,230,240,250,260,270,280,
@@ -71,7 +72,7 @@ c
      &       3150,3160,3170,3180,3190,3200,3210,3220,3230,3240,3250,
      &       3260,3270,3280,3290,3300,3310,3320,3330,3340,3350,3360,
      &       3370,3380,3390,3400,3410,3420,3430,3440,3450,3460,3470,
-     &       3480,3490,3500,3510),
+     &       3480,3490,3500,3510,3520),
      &         errnum
 c
 c
@@ -165,12 +166,7 @@ c
 c
 c
  100  continue
-      num_error = num_error + 1
-      write(out,9009) noelem,mxel
- 9009 format(/1x,'>>>>> error: ',i7,': the number of elements in the ',
-     &           'structure exceeds'/14x,i7,': the maximum number of',
-     &         'elements allowed. execution'/14x,'will be terminated.'/)
-      input_ok = .false.
+c                 available     
       go to 9999
 c
 c
@@ -725,8 +721,8 @@ c
       write(out,9062)
  9062 format(/1x,
      & '>>>> WARNING: turning off crack growth suspends the force',
-     & /,'               reduction process for elements being killed or',
-     & /,'               nodes being released. This may not be what you',
+     & /,'            reduction process for elements being killed or',
+     & /,'            nodes being released. This may not be what you',
      & /,'               want to happen....',/)
       go to 9999
 c
@@ -818,11 +814,7 @@ c
 c
 c
  740  continue
-      num_error = num_error + 1
-      write(out,9172) param,noelem
- 9172 format(/1x,'>>>>> error: ',i6,': the current block number ',
-     &           ' exceeds ',i6,':'/14x,'the maximum number of bloc',
-     &           'ks allowed. it will be ignored.'/)
+c               available
       go to 9999
 c
 c
@@ -1385,11 +1377,14 @@ c
       go to 9999
 c
 c
- 1360 continue
+ 1360 continue      
       num_warn = num_warn + 1
-      write(out,9133) param
- 9133 format(/1x,'>>>>> warning: dof ',i6,' has already been constrain',
-     &           'ed. this constraint'/14x,'request will be ignored'/)
+      if( count_136 == 0 ) write(out,8136)
+      count_136 = 1
+      write(out,9133) int(rparam), param
+ 9133 format(10x,2i10)
+ 8136 format(/1x,'>>>>> warning: these nodes and dof numbers already',
+     &       ' have constraints defined:')
       go to 9999
 c
 c
@@ -1466,7 +1461,7 @@ c
  1440 continue
       num_error = num_error + 1
 c
-      if(param.eq.4hpcm ) then
+      if(param.eq.id_pcm ) then
          shrtst= 'dyn stfn'
       else
          shrtst= '  mass  '
@@ -1892,7 +1887,7 @@ c
 c
  1920 continue
       num_error = num_error + 1
-      write(out,9201)
+      write(out,9202)
  9202 format(/1x,'>>>>> error: given filename was unacceptible.',
      &       '  cannot',/7x,'retrieve database.  command ignored.')
       goto 9999
@@ -2151,7 +2146,8 @@ c
 c
  2240 continue
       write(out,9234)
- 9234 format(/1x,'>>>>> WARNING: all existing constraint data and local',
+ 9234 format(/1x,'>>>>> WARNING: all existing constraint data',
+     &  ' and local',
      &       /1x,'               coordinate systems at nodes now',
      &       ' deleted...'/ )
        goto 9999
@@ -2650,7 +2646,8 @@ c
  2770 continue
       num_warn = num_warn + 1
       write(out,9295)
- 9295 format(/1x,'>>>>> Warning: memory (in mb) expected for solver use',
+ 9295 format(/1x,'>>>>> Warning: memory (in mb)',
+     & ' expected for solver use',
      &           /)
       goto 9999
 c
@@ -2800,7 +2797,8 @@ c
  2950 continue
       num_error = num_error + 1
       write(out,9313) param
- 9313 format(/1x,'>>>>> Error: shape number must be between 0 and ',i5,/,
+ 9313 format(/1x,'>>>>> Error: shape number must be between 0 and ',
+     &     i5,/,
      &           '           Ignoring surface definition.',/)
       go to 9999
 c
@@ -3295,11 +3293,6 @@ c
 c
       integer :: strlng
       character(len=50) :: string
-      character(len=35) :: strng1
-      character(len=8) :: shrtst,shrtst1,shrtst2
-      character(len=24) :: lngstr
-      character(len=21) :: strng21
-      character(len=29) :: strng29
 c
       double precision, parameter :: hundred = 100.0d0
       logical, parameter :: mess_61 = .true.
@@ -3338,7 +3331,8 @@ c
  30   continue
       num_warn = num_warn + 1
       write(out,9003)
- 9003 format(/1x,'>>>>> warning: unknown option on stress-strain curve.',
+ 9003 format(/1x,'>>>>> warning: unknown option on stress-strain',
+     &   ' curve.',
      & /,16x,'curve treated as rate and temperature independent...'/)
       go to 9999
 c
@@ -3588,11 +3582,11 @@ c
      & /,16x,'This mpc equation will be skipped....'/)
       go to 9999
 c
- 350  continue  !     available
+ 350  continue
       num_error = num_error + 1
-      write(out,9035) param
+      write(out,9035)
  9035 format(/1x,
-     &'>>>>> available error message')
+     &'>>>>> error: missing one or more direction cosines'/)
       go to 9999
 c
  360  continue
@@ -3895,7 +3889,8 @@ c
  710  continue
       num_error = num_error + 1
       write(out,9071)
- 9071 format(/,1x,'>>>>> Error: Could not read from binary packet file.',
+ 9071 format(/,1x,'>>>>> Error: Could not read from binary',
+     &  ' packet file.',
      & /,14x,'Returning to look for next high level command.')
       go to 9999
 c

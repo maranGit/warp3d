@@ -34,8 +34,6 @@ c
       double precision, parameter :: zero = 0.0d00,                             
      &                               one  = 1.0d00                              
       logical, parameter :: local_debug = .false.                               
-                                                                                
-      integer :: chknode, chkdof                                                
 c                                                                               
 c                                                                               
 c              set the residual load vector at iter = 0 just before             
@@ -80,7 +78,7 @@ c
 c                                                                               
       write(iout,9000) norm_load                                                
       write(iout,9100)                                                          
-      do i = 1, nodof                                                           
+      do i = 1, nodof ! nodof                                                          
        write(iout,9200) i, cstmap(i),  res(i), pbar(i),                         
      &               -mdiag(i)*du(i)*nfac,                                      
      &               contact_force(i), -ifv(i)                                  
@@ -139,7 +137,7 @@ c
 c                                                                               
 c              locals                                                           
 c                                                                               
-      integer :: i, chknode, chkdof                                             
+      integer :: i                                             
       double precision ::                                                       
      &  nfac, zero, one, two, accel_n1, term_load, nfac1, nfac2,                
      &  force_lag, total_external, inertia_contact                              
@@ -191,7 +189,7 @@ c
 c                                                                               
       if( local_debug ) then                                                    
         write(iout,9400); write(iout,9405)                                      
-        do i = 1, nodof                                                         
+        do i = 1, nodof  ! 10                                                       
           force_lag = zero                                                      
           if( have_mpc_equations ) force_lag = d_lagrange_forces(i)             
           total_external = pbar(i) + contact_force(i) +                         
@@ -249,7 +247,6 @@ c
      &  t51, "contact force",                                                   
      &  t70, "dlagrange", t82, "inertia adjust",t101,"total ext",t120,          
      &   "ifv" )                                                                
- 9990 format('... bugs: ',i6,2f15.6)                                            
 c                                                                               
       end                                                                       
                                                                                 

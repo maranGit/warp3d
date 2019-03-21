@@ -2,6 +2,7 @@ c ************************************************************************
 c *                                                                      *
 c *    routine  mm03p -- vectorized pre-processor for block of mises or  *
 c *                      gurson elements                                 *
+c *                      updated: 6/12/2018 rhd                          *
 c *                                                                      *
 c ************************************************************************
 c
@@ -12,72 +13,48 @@ c
      &  stress_n1_elas, p_trial, q_trial, history, history1,
      &  yld_func, nonlinear_flag, process_block, iout, segmental,
      &  curve_type, felem, ym_n, nu_at_n, hist_size )
+c
       use segmental_curves, only : now_blk_relem
 
-      implicit integer (a-z)
+      implicit none
       include 'param_def'
 c
 c               parameter declarations
 c
-      double precision
+      integer :: step, iter, span, gpn, curve_type, felem, iout,
+     &           hist_size
+      double precision ::
      &  deps(mxvl,6), e(*), nu(*), sigma_o(*), f0(*), q1(*), q2(*),
      &  q3(*), stress_n(nstrs,*), stress_n1(nstrs,*),
      &  stress_n1_elas(mxvl,6,*), ym_n(*), nu_at_n(*),
      &  p_trial(*), q_trial(*), history(span,hist_size,*),
      &  history1(span,hist_size,*), yld_func(*), n_power(*), h_fixed(*)
 c
-      logical nucleation(*), nonlinear_flag(*), null_point(*),
-     &        process_block, segmental
+      logical :: nucleation(*), nonlinear_flag(*), null_point(*),
+     &           process_block, segmental
 c
-c               locally allocated arrays for vectorization
+c               locals
 c
-      double precision
-     &  a(mxvl), b(mxvl), c(mxvl), d(mxvl), shear_mod(mxvl),
-     &  term1(mxvl), term2(mxvl), term3(mxvl),
-     &  root22, third, zero, one, two, six, onehalf, toler,
-     &  dword,  half, chk_yld_eps, h, mm03sc, plastic_strain,
+      integer :: i, j, iword(2), state
+      double precision ::
+     &  a, b, c, d, shear_mod, term1, term2, term3,
+     &  dword, h, plastic_strain,
      &  flow_stress(mxvl), hnow, ddumy, e_n, nu_n, g_n,
-     &  een1, een2, een3, een4, een5, een6, e1, e2, e3, e4, e5,
-     &  e6
-      integer iword(2)
-      logical    debug, gurson(mxvl), previously_linear, now_nonlinear
+     &  een1, een2, een3, een4, een5, een6, trial_eps(6)
+      double precision, external :: mm03sc
       equivalence ( dword, iword )
+      logical ::  debug, gurson, previously_linear, now_nonlinear,
+     &            active_point(mxvl)
 c
-      data     root22 / 0.70710678 /, third / 0.3333333333333 /
-      data     zero, one, two, six, onehalf / 0.0, 1.0, 2.0, 6.0, 1.5 /
-      data     toler / 1.0e-10 /, half / 0.5 /
-      data     chk_yld_eps / 0.002 /
+      double precision, parameter ::
+     &    root22 = dsqrt(2.d0)/2.d0, third = 1.d0/3.d0, zero = 0.d0,
+     &    one = 1.d0, two = 2.d0, six = 6.d0, onehalf = 1.5d0,
+     &    toler = 1.0d-10, half = 0.5d0, chk_yld_eps = 0.002d0
 c
-c               initialize history on step 1
+c               initialize history on step 1, time = 0
 c
       debug = .false.
-c
-      if ( step .eq. 1 ) then
-        iword(1)    = -1
-        iword(2)    = 0
-        if( .not. segmental ) then
-           do i = 1, span
-              if ( n_power(i) .gt. zero ) then
-                 h = e(i) * (0.9999*e(i)) / ( e(i)-0.9999*e(i))
-              else
-                 h  = h_fixed(i)
-              end if
-              history(i,4,gpn)  = h
-           end do
-        endif
-!DIR$ VECTOR ALIGNED
-        do i = 1, span
-          history(i,1,gpn)  = zero
-          history(i,2,gpn)  = sigma_o(i)
-          history(i,3,gpn)  = zero
-          history(i,5,gpn)  = f0(i)
-          history(i,6,gpn)  = dword
-          history(i,7,gpn)  = zero
-          history(i,8,gpn)  = zero
-          history(i,9,gpn)  = zero
-          history(i,10,gpn) = zero
-        end do
-      end if
+      if( step .eq. 1 ) call mm03p_a
 c
 c               check for null gauss points. set last n1 values zero
 c               to prevent susequent uninitialzed variable computations
@@ -90,56 +67,32 @@ c
      &                  abs( deps(i,3) ) + abs( deps(i,4) ) +
      &                  abs( deps(i,5) ) + abs( deps(i,6) )
      &                  .le. toler * chk_yld_eps
-      stress_n1(7,i) = zero
-      stress_n1(8,i) = zero
-      stress_n1(9,i) = zero
-      end do
-c
-      do i = 1, span
-       if ( .not. null_point(i) ) go to 100
-      end do
-c
-c               all points are null (no strain increment)
-c
-      state    = -1
-      iword(1) = state
+       active_point(i) = .not. null_point(i)
 !DIR$ VECTOR ALIGNED
-      do i = 1, span
-        stress_n1(1,i)          = stress_n(1,i)
-        stress_n1(2,i)          = stress_n(2,i)
-        stress_n1(3,i)          = stress_n(3,i)
-        stress_n1(4,i)          = stress_n(4,i)
-        stress_n1(5,i)          = stress_n(5,i)
-        stress_n1(6,i)          = stress_n(6,i)
-        stress_n1(7,i)          = stress_n(7,i)
-        stress_n1(8,i)          = stress_n(8,i)
-        stress_n1(9,i)          = stress_n(9,i)
-        stress_n1_elas(i,1,gpn) = zero
-        stress_n1_elas(i,2,gpn) = zero
-        stress_n1_elas(i,3,gpn) = zero
-        stress_n1_elas(i,4,gpn) = zero
-        stress_n1_elas(i,5,gpn) = zero
-        stress_n1_elas(i,6,gpn) = zero
-c
-        history1(i,1,gpn)  = history(i,1,gpn)
-        history1(i,2,gpn)  = history(i,2,gpn)
-        history1(i,3,gpn)  = history(i,3,gpn)
-        history1(i,4,gpn)  = history(i,4,gpn)
-        history1(i,5,gpn)  = history(i,5,gpn)
-        history1(i,6,gpn)  = dword
-        history1(i,7,gpn)  = zero
-        history1(i,8,gpn)  = zero
-        history1(i,9,gpn)  = zero
-        history1(i,10,gpn) = zero
+       stress_n1(7:nstrs,i) = zero
       end do
-      process_block              = .false.
-      if ( debug ) write(iout,9000)
-      return
+c
+      process_block = any( active_point(1:span) )
+      if( .not. process_block ) then !  all points are null
+        state    = -1
+        iword(1) = state
+!DIR$ VECTOR ALIGNED
+        do i = 1, span
+         stress_n1(:,i)          = stress_n(:,i)
+         stress_n1_elas(i,:,gpn) = zero
+         history1(i,1:5,gpn)     = history(i,1:5,gpn)
+         history1(i,6,gpn)       = dword
+         history1(i,7:9,gpn)     = zero
+!DIR$ VECTOR ALIGNED
+         history1(i,10:15,gpn)   = history(i,10:15,gpn) ! no eps elastic change
+       end do
+       if ( debug ) write(iout,9000)
+       return
+      end if
 c
 c               we must process this block of elements.
 c
- 100  continue
-      if ( debug ) write(iout,9010) step, iter, span, gpn
+      if( debug ) write(iout,9010) step, iter, span, gpn
 c
 c
 c               1.  trial elastic stress at n+1. set actual
@@ -148,65 +101,35 @@ c
 !DIR$ VECTOR ALIGNED
       do i = 1, span
 c
-c                      elastic strain at n from stresses at n
-c                      and elastic constants at n. a zero modulus
-c                      at n means element must have been killed
-c
-        e_n  = ym_n(i)
-        if ( e_n .gt. zero ) then
-           nu_n = nu_at_n(i)
-           g_n  = e_n/two/(one+nu_n)
-           een1 = (stress_n(1,i)-nu_n*(stress_n(2,i)+stress_n(3,i)))/e_n
-           een2 = (stress_n(2,i)-nu_n*(stress_n(1,i)+stress_n(3,i)))/e_n
-           een3 = (stress_n(3,i)-nu_n*(stress_n(1,i)+stress_n(2,i)))/e_n
-           een4 = stress_n(4,i) / g_n
-           een5 = stress_n(5,i) / g_n
-           een6 = stress_n(6,i) / g_n
-        else
-           een1 = zero
-           een2 = zero
-           een3 = zero
-           een4 = zero
-           een5 = zero
-           een6 = zero
-        end if
-c
 c                      strain for trial stress computation at n+1
-c                      is elastic strain at n + increment of strain
-c                      over step.
+c                      is elastic strain at n + increment of
+c                      mechaical strain over step over step.
 c
-        e1 = een1 + deps(i,1)
-        e2 = een2 + deps(i,2)
-        e3 = een3 + deps(i,3)
-        e4 = een4 + deps(i,4)
-        e5 = een5 + deps(i,5)
-        e6 = een6 + deps(i,6)
+!DIR$ VECTOR ALIGNED
+        trial_eps(1:6) = history(i,10:15,gpn) + deps(i,1:6)
 c
 c                      trial elastic stress using strain at n+1 and
 c                      elastic constants at n+1
 c
-        c(i) = e(i) / ( ( one + nu(i) ) * ( one - two * nu(i) ) )
-        a(i) = c(i) * ( one - nu(i) )
-        b(i) = c(i) * nu(i)
-        shear_mod(i) = e(i) / ( two*(one+nu(i)))
+        c = e(i) / ( ( one + nu(i) ) * ( one - two * nu(i) ) )
+        a = c * ( one - nu(i) )
+        b = c * nu(i)
+        shear_mod = e(i) / ( two*(one+nu(i)))
 c
-        stress_n1(1,i) = a(i)*e1 + b(i)*(e2+e3)
-        stress_n1(2,i) = a(i)*e2 + b(i)*(e1+e3)
-        stress_n1(3,i) = a(i)*e3 + b(i)*(e1+e2)
-        stress_n1(4,i) = shear_mod(i) * e4
-        stress_n1(5,i) = shear_mod(i) * e5
-        stress_n1(6,i) = shear_mod(i) * e6
+        stress_n1(1,i) = a*trial_eps(1) + b*(trial_eps(2)+trial_eps(3))
+        stress_n1(2,i) = a*trial_eps(2) + b*(trial_eps(1)+trial_eps(3))
+        stress_n1(3,i) = a*trial_eps(3) + b*(trial_eps(1)+trial_eps(2))
+        stress_n1(4,i) = shear_mod * trial_eps(4)
+        stress_n1(5,i) = shear_mod * trial_eps(5)
+        stress_n1(6,i) = shear_mod * trial_eps(6)
 c
-        stress_n1_elas(i,1,gpn) = stress_n1(1,i)
-        stress_n1_elas(i,2,gpn) = stress_n1(2,i)
-        stress_n1_elas(i,3,gpn) = stress_n1(3,i)
-        stress_n1_elas(i,4,gpn) = stress_n1(4,i)
-        stress_n1_elas(i,5,gpn) = stress_n1(5,i)
-        stress_n1_elas(i,6,gpn) = stress_n1(6,i)
+!DIR$ VECTOR ALIGNED
+        stress_n1_elas(i,1:6,gpn) = stress_n1(1:6,i)
 c
-      end do
+      end do ! over span
+
 c
-      if ( debug ) then
+      if( debug ) then
         write(iout,9020)
         do i = 1, span
           write(iout,9030) i, (deps(i,j),
@@ -222,17 +145,17 @@ c
       do i = 1, span
         p_trial(i) = - ( stress_n1(1,i) + stress_n1(2,i) +
      &                   stress_n1(3,i) ) * third
-        a(i)       = stress_n1(1,i) - stress_n1(3,i)
-        b(i)       = stress_n1(1,i) - stress_n1(2,i)
-        c(i)       = stress_n1(2,i) - stress_n1(3,i)
-        d(i)       = stress_n1(4,i)*stress_n1(4,i) +
+        a       = stress_n1(1,i) - stress_n1(3,i)
+        b       = stress_n1(1,i) - stress_n1(2,i)
+        c       = stress_n1(2,i) - stress_n1(3,i)
+        d       = stress_n1(4,i)*stress_n1(4,i) +
      &               stress_n1(5,i)*stress_n1(5,i) +
      &               stress_n1(6,i)*stress_n1(6,i)
-        q_trial(i) = root22 * sqrt( a(i)*a(i) + b(i)*b(i) +
-     &                              c(i)*c(i) + six*d(i) )
+        q_trial(i) = root22 * sqrt( a*a + b*b +
+     &                              c*c + six*d )
        end do
 c
-      if ( debug ) then
+      if( debug ) then
         write(iout,9040)
         do i = 1, span
          write(iout,9042) i, p_trial(i), q_trial(i)
@@ -251,9 +174,7 @@ c                  routine knows about change in curve.
 c
 c
 !DIR$ VECTOR ALIGNED
-      do i = 1, span
-        flow_stress(i) =  history(i,2,gpn)
-      end do
+      flow_stress(1:span) =  history(1:span,2,gpn)
 c
       if ( segmental .and. curve_type .eq. 1 ) then
 !DIR$ VECTOR ALIGNED
@@ -273,22 +194,22 @@ c                  gurson- tvergaard yield function for the trial
 c                  elastic stress state. current matrix stress is
 c                  history(2), current void fraction is history(5).
 c
+!DIR$ VECTOR ALIGNED
       do i = 1, span
-        gurson(i) = f0(i) .gt. zero .or. nucleation(i)
-        if ( gurson(i) ) then
-          term1(i)       = q_trial(i) / flow_stress(i)
-          term2(i)       = two * q1(i) * history(i,5,gpn) *
-     &                     cosh( onehalf*q2(i)*p_trial(i)/
-     &                     flow_stress(i) )
-          term3(i)       = one + q3(i) * history(i,5,gpn) *
-     &                      history(i,5,gpn)
-          yld_func(i) = term1(i)*term1(i) + term2(i) - term3(i)
+        gurson = f0(i) .gt. zero .or. nucleation(i)
+        if( gurson ) then
+          term1 = q_trial(i) / flow_stress(i)
+          term2 = two * q1(i) * history(i,5,gpn) *
+     &               cosh( onehalf*q2(i)*p_trial(i)/
+     &               flow_stress(i) )
+          term3 = one + q3(i) * history(i,5,gpn) * history(i,5,gpn)
+          yld_func(i) = term1*term1 + term2 - term3
         else
           yld_func(i) = q_trial(i) - flow_stress(i)
        end if
       end do
 c
-      if ( debug ) then
+      if( debug ) then
         write(iout,9050)
         do i = 1, span
          write(iout,9052) i, yld_func(i)
@@ -302,6 +223,7 @@ c                  extrapolated displacements. linear points must
 c                  remain linear during this update.
 c
       process_block = .false.
+!DIR$ VECTOR ALIGNED
       do i = 1, span
         previously_linear = history(i,1,gpn) .eq. zero
         now_nonlinear     = (history(i,1,gpn) .gt. zero) .or.
@@ -310,7 +232,7 @@ c
         process_block = process_block .or. nonlinear_flag(i)
       end do
 c
-      if ( debug ) then
+      if( debug ) then
          write(iout,9060)
          do i = 1, span
           write(iout,9062) i, nonlinear_flag(i)
@@ -319,11 +241,12 @@ c
       end if
 c
 c              6.  for elements that are still linear, compute
-c                  updated strain energy density.
+c                  updated strain energy density. update accumulative
+c                  elastic strains
 c
 !DIR$ VECTOR ALIGNED
-      do i= 1, span
-        if ( .not. nonlinear_flag(i) ) then
+      do i = 1, span
+        if( .not. nonlinear_flag(i) ) then
           stress_n1(7,i) = stress_n(7,i) +
      &      half * (
      &      deps(i,1) * (stress_n1(1,i) + stress_n(1,i))
@@ -334,32 +257,26 @@ c
      &    + deps(i,6) * (stress_n1(6,i) + stress_n(6,i)) )
           stress_n1(8,i) = stress_n(8,i)
           stress_n1(9,i) = stress_n(9,i)
+!DIR$ VECTOR ALIGNED
+          history1(i,10:15,gpn) = history(i,10:15,gpn) + deps(i,1:6)
         end if
       end do
 c
-      if ( debug ) then
+      if( debug ) then
          write(iout,9070)
          do i = 1, span
-          if (.not.  nonlinear_flag(i) ) write(iout,9072) i,
+          if( .not.  nonlinear_flag(i) ) write(iout,9072) i,
      &            stress_n1(7,i)
          end do
       end if
 c
 c              7.  set element histories at n+1 to those at n
 c                  those for nonlinear elements will be modified.
+c                  ** except elastic strains **
 c
+      do j = 1, 9
 !DIR$ VECTOR ALIGNED
-      do i= 1, span
-        history1(i,1,gpn)  = history(i,1,gpn)
-        history1(i,2,gpn)  = history(i,2,gpn)
-        history1(i,3,gpn)  = history(i,3,gpn)
-        history1(i,4,gpn)  = history(i,4,gpn)
-        history1(i,5,gpn)  = history(i,5,gpn)
-        history1(i,6,gpn)  = history(i,6,gpn)
-        history1(i,7,gpn)  = history(i,7,gpn)
-        history1(i,8,gpn)  = history(i,8,gpn)
-        history1(i,9,gpn)  = history(i,9,gpn)
-        history1(i,10,gpn) = history(i,10,gpn)
+        history1(1:span,j,gpn)  = history(1:span,j,gpn)
       end do
 
 c
@@ -381,31 +298,88 @@ c
  9064 format(/,'>> process block flag: ',l1)
  9070 format(/,'>> updated energy densities for linear elements:')
  9072 format(i4,f10.6)
- 9100 format('>> trial elastic state computation: ',
-     &  /,   '      e, nu: ',f10.2,f10.3 )
- 9110 format('      deps     dsigel       sigel ',
-     & 6(/,1x,3f11.4) )
 c
-      end
+      contains
+c     ========
+      subroutine mm03p_a  ! setup step 1
+      implicit none
+c
+      if( .not. segmental ) then
+!DIR$ VECTOR ALIGNED
+           do i = 1, span
+              if( n_power(i) .gt. zero ) then
+                 h = e(i) * (0.9999d0*e(i)) / ( e(i)-0.9999d0*e(i))
+              else
+                 h  = h_fixed(i)
+              end if
+              history(i,4,gpn)  = h
+           end do
+      endif
+c
+      iword(1) = -1
+      iword(2) = 0
+!DIR$ VECTOR ALIGNED
+      do i = 1, span
+          history(i,1,gpn)  = zero        ! equiv plastic strain
+          history(i,2,gpn)  = sigma_o(i)  ! current static yld stress
+          history(i,3,gpn)  = zero        ! current p_new  GT model
+c                   4                     ! current H-prime
+          history(i,5,gpn)  = f0(i)       ! current porosity GT model
+          history(i,6,gpn)  = dword       ! current rate dependent yld stress
+          history(i,7,gpn)  = zero        ! dep GT model
+          history(i,8,gpn)  = zero        ! deq GT model
+          history(i,9,gpn)  = zero        ! q   GT model
+!DIR$ VECTOR ALIGNED
+          history(i,10:15,gpn) = zero     ! accumulated elastic strains
+      end do
+c
+c               compute initial elastic strain values using user-defined
+c               initial stresses pre-loaded into stress_n.
+c               these are zero unless model has user-initial stresses
+c
+!DIR$ VECTOR ALIGNED
+      do i = 1, span
+        e_n  = ym_n(i)  ! at time 0 of simulation
+        if( e_n .le. zero ) cycle ! sanity for bad user-input
+        nu_n = nu_at_n(i)
+        g_n  = e_n/two/(one+nu_n)
+        een1 = (stress_n(1,i)-nu_n*(stress_n(2,i)+stress_n(3,i)))/e_n
+        een2 = (stress_n(2,i)-nu_n*(stress_n(1,i)+stress_n(3,i)))/e_n
+        een3 = (stress_n(3,i)-nu_n*(stress_n(1,i)+stress_n(2,i)))/e_n
+        een4 = stress_n(4,i) / g_n
+        een5 = stress_n(5,i) / g_n
+        een6 = stress_n(6,i) / g_n
+        history(i,10,gpn) = een1
+        history(i,11,gpn) = een2
+        history(i,12,gpn) = een3
+        history(i,13,gpn) = een4
+        history(i,14,gpn) = een5
+        history(i,15,gpn) = een6
+      end do
+c
+      return
+c
+      end subroutine mm03p_a
+      end subroutine mm03p
 c *******************************************************************
 c *                                                                 *
 c *      material model # 03 routine -- mm03f                       *
 c *                                                                 *
 c *******************************************************************
 c
-c
-      function mm03f( stress, sbar, f, q1, q2, q3 )
-c
+      function mm03f( stress, sbar, f, q1, q2, q3 ) result( value )
 c
 c              compute the value of the gurson yield
 c              function for the state of stress tau.
 c
-      implicit double precision (a-h,o-z)
-      double precision
-     &   mm03f, mm03g
-      dimension stress(*)
-      data     root22 / 0.70710678 /, third / 0.3333333333333 /
-      data     six / 6.0 /
+      implicit none
+c
+      double precision :: stress(*), sbar, f, q1, q2, q3, value
+c
+      double precision :: p, a, b, c, d, q
+      double precision, external :: mm03g
+      double precision, parameter :: root22 = dsqrt(2.d0)/2.d0,
+     &                               third = 1.d0/3.d0, six = 6.d0
 c
       p  = - ( stress(1) + stress(2) + stress(3) ) * third
       a  = stress(1) - stress(3)
@@ -415,35 +389,37 @@ c
      &     stress(6)*stress(6)
       q  = root22 * sqrt( a*a + b*b + c*c + six*d )
 c
-      mm03f = mm03g( q, sbar, f, p, q1, q2, q3 )
+      value = mm03g( q, sbar, f, p, q1, q2, q3 )
 c
       return
-      end
+      end function mm03f
 c *******************************************************************
 c *                                                                 *
 c *      material model # 03 routine -- mm03g                       *
 c *                                                                 *
 c *******************************************************************
 c
-c
-      function mm03g( q, sbar, f, p, q1, q2, q3 )
+      function mm03g( q, sbar, f, p, q1, q2, q3 ) result( value )
 c
 c
 c              compute the value of the Gurson yield
 c              given the scaler parameters
 c
-      implicit double precision (a-h,o-z)
-      double precision
-     &  mm03g
-      data one, two, onehalf / 1.0, 2.0, 1.5 /
+      implicit none
+c
+      double precision :: q, sbar, f, p, q1, q2, q3, value
+c
+      double precision :: term1, term2, term3
+      double precision, parameter :: one = 1.d0, two = 2.d0,
+     &                               onehalf = 1.5d0
 c
       term1  = (q/sbar)*(q/sbar)
       term2  = two * q1 * f * cosh(onehalf*q2*p/sbar)
       term3  = one + q3 * f * f
-      mm03g  = term1 + term2 - term3
+      value  = term1 + term2 - term3
 c
       return
-      end
+      end function mm03g
 c ************************************************************************
 c *                                                                      *
 c *    routine  mm03us -- update state variables f, ebarp, sbar given    *
@@ -462,12 +438,12 @@ c
      &                   mpoweri, nucleation, nuc_s_n, nuc_e_n,
      &                   nuc_f_n, ebarp_new, sbar_new, f_new, h_new,
      &                   iout, debug, segmental,
-     &                   power_law, converge, first_time )
+     &                   power_law, converge )
       implicit double precision (a-h,o-z)
       double precision
      &  n_power, m_power, mpoweri, nuc_s_n, nuc_e_n, nuc_f_n
       logical debug, consth, nucleation, rate_depen,
-     &         segmental, power_law, converge, first_time
+     &         segmental, power_law, converge
       data    max_iterations / 10 /
       data    zero, one, tol / 0.0, 1.0, 0.000001 /
 c
@@ -494,7 +470,7 @@ c
       call mm03sb( sbar_new, h_new, ebarp_new, ebarp, consth,
      &             sigma_o, h_constant, e, n_power,m_power,
      &             dt, eps_ref, rate_depen, mpoweri, iout,
-     &             debug, segmental, power_law, first_time )
+     &             debug, segmental, power_law )
 c
 c           for nucleation, get the A function and the derivative
 c           of A wrt ebarp at the current estimate for ebarp_new.
@@ -581,15 +557,14 @@ c
      &                   mpoweri, nucleation, nuc_s_n, nuc_e_n,
      &                   nuc_f_n, ebarp_new, sbar_new, f_new, h_new,
      &                   elenum, ptno, iout, debug, segmental,
-     &                   power_law, converge, first_time )
+     &                   power_law, converge )
       implicit double precision (a-h,o-z)
       double precision
      &  n_power, m_power, mpoweri, nuc_s_n, nuc_e_n, nuc_f_n,
      &  sfactors(5)
       integer  elenum, ptno
       logical  local_debug, debug, consth, nucleation, rate_depen,
-     &         segmental, power_law, converge, debug_mm03sb,
-     &         first_time
+     &         segmental, power_law, converge, debug_mm03sb
       data    local_debug, debug_mm03sb
      &        / .false., .false. /
       data    zero, half, one, two, tol / 0.0, 0.5, 1.0, 2.0, 0.00001 /
@@ -637,7 +612,7 @@ c
         call mm03sb( sbar_new, h_new, ebarp_big, ebarp, consth,
      &             sigma_o, h_constant, e, n_power, m_power,
      &             dt, eps_ref, rate_depen, mpoweri, iout,
-     &             debug_mm03sb, segmental, power_law, first_time )
+     &             debug_mm03sb, segmental, power_law )
         a_nuc   = zero
         a_prime = zero
         if ( nucleation ) then
@@ -704,7 +679,7 @@ c
       call mm03sb( sbar_new, h_new, ebarp_new, ebarp, consth,
      &             sigma_o, h_constant, e, n_power,m_power,
      &             dt, eps_ref, rate_depen, mpoweri, iout,
-     &             debug_mm03sb, segmental, power_law, first_time )
+     &             debug_mm03sb, segmental, power_law )
 c
 c           for nucleation, get the A function and the derivative
 c           of A wrt ebarp at the current estimate for ebarp_new.
@@ -774,8 +749,7 @@ c
       call mm03sb( sbar_new, h_new, ebarp_new, ebarp, consth,
      &             sigma_o, h_constant, e, n_power,m_power,
      &             dt, eps_ref, rate_depen, mpoweri, iout,
-     &             debug_mm03sb, segmental, power_law, first_time )
-c
+     &             debug_mm03sb, segmental, power_law )
 c           for nucleation, get the A function and the derivative
 c           of A wrt ebarp at the current estimate for ebarp_new.
 c
@@ -824,7 +798,7 @@ c
        call mm03sb( sbar_new, h_new, ebarp_new, ebarp, consth,
      &             sigma_o, h_constant, e, n_power,m_power,
      &             dt, eps_ref, rate_depen, mpoweri, iout,
-     &             debug_mm03sb, segmental, power_law, first_time )
+     &             debug_mm03sb, segmental, power_law )
        a_nuc   = zero
        a_prime = zero
        if ( nucleation ) then
@@ -853,10 +827,6 @@ c
  9200 format(/,6x,'>> Starting iteration: ',i3,
      &        ' to find ebarp, f, sbar...' )
  9300 format(10x,i4,i3,' f_new < 0 during update')
- 9400 format(10x,i7,i3,' failed to bracket ebarp_new.',
-     &   /,12x,'ebarp, p_new, dep, q_new, deq: ',f12.8, f10.3,
-     &         f12.8, f10.3, f12.8,
-     &   /,12x,'starting estimate for ebarp_new: ',f12.8 )
  9420 format(/,8x,' >> mm03ss. ebarp_new bracketed., setup of',
      &       /,8x,'    newton-bisection iterations...',
      &       /,8x,'    r_low, r_high: ',2f10.6,
@@ -888,14 +858,23 @@ c
       subroutine mm03sb( sbar_new, h_new, ebarp_new, ebarp, consth,
      &                   sigma_o, h_constant, e, n_power,
      &                   m_power, dt, eps_ref, rate_depen, mpoweri,
-     &                   iout, debug, segmental, power_law,
-     &                   first_time )
-      implicit double precision (a-h,o-z)
-      double precision
-     &   n_power, mpoweri, mm03is, m_power, mm03sc
-      logical consth, debug, rate_depen, segmental, power_law,
-     &        first_time
-      data one / 1.0 /
+     &                   iout, debug, segmental, power_law )
+      implicit none
+c
+c                 parameters
+c
+      integer :: iout
+      double precision :: sbar_new, h_new, ebarp_new, ebarp,
+     &                    sigma_o, h_constant, e, n_power,
+     &                    m_power, dt, eps_ref, mpoweri
+      logical :: consth, debug, rate_depen, segmental, power_law
+c
+c                locals
+c
+      double precision :: term0, term1, term2, sbar_inviscid,
+     &                    h_inviscid, d_ebarp, rate_multiplier
+      double precision, external :: mm03is, mm03sc
+      double precision, parameter :: one = 1.d0
 c
 c                 1. get the updated inviscid equivalent stress
 c                    and plastic modulus given the total plastic
@@ -916,7 +895,7 @@ c
            h_inviscid    = h_constant
       else if (power_law) then
            sbar_inviscid = mm03is( ebarp_new, sigma_o, e, n_power,
-     &                             h_inviscid, iout )
+     &                             h_inviscid )
         else if ( segmental ) then
            d_ebarp = ebarp_new - ebarp
            sbar_inviscid = mm03sc( ebarp_new, h_inviscid, d_ebarp,
@@ -981,25 +960,38 @@ c *                                                                      *
 c ************************************************************************
 c
 c
-      function mm03is( eps_pls, sigma_o, e, power, hprime, iout )
+      function mm03is( eps_pls, sigma_o, e, power, hprime )
+     &              result( value )
 c
-      implicit double precision (a-h,o-z)
-      double precision
-     & mm03is, n1, n2, n3, n4
-      logical local_debug, converge
-      data local_debug / .false. /
-      data zero, one, two, three / 0.0, 1.0, 2.0, 3.0 /
-      data beta, alpha, toler, max_itr
-     &     / 0.95, 1.1, 0.000001, 20 /
+      implicit none
+c
+c              parameters
+c
+      double precision :: eps_pls, sigma_o, e, power, hprime, value
+c
+c              locals
+c
+      integer :: iterno
+      integer, parameter :: max_itr = 20
+      logical :: converge
+      logical, parameter :: local_debug = .false.
+      double precision :: sig_o, eps_o, poweri, eps_a, eps_b, h, h2,
+     &                    h3, sig_a, sig_b, epower, pm1, et_b, strain,
+     &                    stress, stress_new, fprime, ta, tb, n1, n2,
+     &                    n3, n4, pn1, pn2, pn3, pn4, resid, deps,
+     &                    et, strain_new
+      double precision, parameter ::
+     &   zero = 0.d0, one = 1.d0, two = 2.d0, three = 3.d0,
+     &   beta = 0.95d0, alpha = 1.1d0, toler = 0.000001d0
 c
 c              given the total plastic strain, return the stress,
 c              and new plastic modulus. an iterative solution is
 c              required to find the stress. a newton iteration
 c              scheme converges very fast.
 c
-      if ( eps_pls .le. zero ) then
-       mm03is = sigma_o
-       hprime = e * (0.9999*e) / ( e-0.9999*e)
+      if( eps_pls <= zero ) then
+       value = sigma_o
+       hprime = e * (0.9999d0*e) / ( e-0.9999d0*e)
        return
       end if
 c
@@ -1036,7 +1028,7 @@ c
 c             use Newton iterations to correct starting value.
 c
 400   continue
-      if ( strain .ge. eps_b ) then
+      if( strain >= eps_b ) then
          stress_new = sig_o * ( strain/eps_o )**poweri
          fprime     = epower * ( strain/eps_o )**pm1
       else
@@ -1056,17 +1048,13 @@ c
       resid      = strain - stress_new/e - eps_pls
       deps       = -resid / ( one - fprime/e )
       strain_new = strain + deps
-c      if ( local_debug ) then
-c        write (iout,9020) iterno, strain, stress_new, fprime,
-c     &                    resid, deps, strain_new
-c      end if
       converge =  abs( strain_new - strain ) .lt. toler * strain_new
      &                              .and.
      &            abs( stress_new - stress ) .lt. toler * stress_new
-      if ( .not. converge ) then
+      if( .not. converge ) then
           iterno = iterno + 1
-          if ( iterno .gt. max_itr ) then
-            mm03is = sig_o
+          if( iterno > max_itr ) then
+            value = sig_o
             hprime = e * e
             return
           end if
@@ -1081,16 +1069,12 @@ c             from that value.
 c
       et     = fprime
       hprime = ( e * et ) / ( e - et )
-      mm03is =  stress_new
+      value =  stress_new
 c
       return
 c
- 9020 format (1x,'>>  Iteration number : ',i2,
-     &   /,10x, 'strain, stress_new, fprime: ',f10.6,f10.3,f10.3,
-     &   /,10x, 'resid, deps, strain_new:    ',f10.6,f10.6,f10.6 )
-c
       end
-cc *******************************************************************
+c *******************************************************************
 c *                                                                 *
 c *      material model # 03 routine -- mm03ap                      *
 c *                                                                 *
@@ -1099,11 +1083,13 @@ c
 c
       subroutine mm03ap( a_nuc, a_prime, ebarp, nuc_s_n, nuc_e_n,
      &                   nuc_f_n )
-      implicit double precision (a-h,o-z)
-      double precision
-     &   nuc_s_n, nuc_e_n,  nuc_f_n
-      data root_2_pi / 2.50663 /
-      data half / 0.5 /
+      implicit none
+c
+      double precision :: a_nuc, a_prime, ebarp, nuc_s_n, nuc_e_n,
+     &                    nuc_f_n
+      double precision :: term1, term2
+      double precision, parameter :: root_2_pi = 2.50663d0,
+     &                               half = 0.5d0
 c
       term1   = nuc_f_n / nuc_s_n / root_2_pi
       term2   = ( ( ebarp - nuc_e_n ) / nuc_s_n )**2
@@ -1267,6 +1253,7 @@ c ****************************************************************
 c
 c
       function mm03sc( ebarp, hprime, deplas, dtime, caseh )
+     &          result( value )
 c
 c                      parameter declarations
 c
@@ -1275,19 +1262,25 @@ c
      &                              sigma_curves, num_seg_points,
      &                              max_seg_points, seg_curves_type,
      &                              curve_rates, sigma_inter_table
-      implicit double precision (a-h,o-z)
-      double precision mm03sc
-      integer caseh
+      implicit none
 c
+c                      parameter declarations
+c
+      integer :: caseh
+      double precision :: ebarp, hprime, deplas, dtime, value
 c
 c                      local declarations
 c
-      integer first_curve, curve_set_type, pt_high, pt_low
-      double precision
-     & stress_values(max_seg_points), mm03lint,
-     & curve_high(max_seg_points), curve_low(max_seg_points)
-c
-      data zero, one, deriv_factor, two / 0.0, 1.0, 0.02, 2.0 /
+      integer :: i, first_curve, curve_set_type, pt_high, pt_low,
+     &           num_curves_in_set, numpts
+      double precision :: stress_values(max_seg_points),
+     &   curve_high(max_seg_points), curve_low(max_seg_points),
+     &   eps_pls_dot, sig_high, sig_low, eps_high, eps_low,
+     &   rate_high, rate_low, hprime_high, hprime_low, dep,
+     &   stress_low, stress_high, derivative
+      double precision, external :: mm03lint
+      double precision, parameter :: zero = 0d0, one = 1.d0,
+     &           two = 2.d0, deriv_factor = 0.02d0
 c
       first_curve       = seg_curve_table(2,active_curve_set)
       curve_set_type    = seg_curves_type(first_curve)
@@ -1297,9 +1290,9 @@ c
 c               check for input point before first point on curve
 c               or beyond last point on curve.
 c
-      if ( curve_set_type .eq. 2 ) then
+      if( curve_set_type .eq. 2 ) then
         eps_pls_dot = zero
-        if ( dtime .gt. zero ) eps_pls_dot =  deplas / dtime
+        if( dtime .gt. zero ) eps_pls_dot =  deplas / dtime
         do i = 1, numpts
          stress_values(i) = mm03lint( eps_pls_dot, num_curves_in_set,
      &                                curve_rates,
@@ -1311,16 +1304,16 @@ c
         end do
       end if
 c
-      if ( ebarp .lt. curve_plseps_values(1) ) then
-        mm03sc = stress_values(1)
+      if( ebarp .lt. curve_plseps_values(1) ) then
+        value = stress_values(1)
         hprime = 1.0e10
         return
       end if
 c
 c                 check for input point beyond right end of curve
 c
-      if ( ebarp .ge. curve_plseps_values(numpts) ) then
-        mm03sc = stress_values(numpts)
+      if( ebarp .ge. curve_plseps_values(numpts) ) then
+        value = stress_values(numpts)
         hprime = zero
         return
       end if
@@ -1329,20 +1322,20 @@ c            point is actually on the curve between points i and i-1.
 c            interpolate linearly to get stress. set plastic modulus.
 c
       do i = 2, numpts
-        if ( ebarp .lt. curve_plseps_values(i) ) then
+        if( ebarp .lt. curve_plseps_values(i) ) then
           sig_high = stress_values(i)
           sig_low  = stress_values(i-1)
           eps_high = curve_plseps_values(i)
           eps_low  = curve_plseps_values(i-1)
           hprime   = (sig_high - sig_low) / ( eps_high - eps_low )
-          mm03sc   = sig_low + hprime * ( ebarp - eps_low )
+          value    = sig_low + hprime * ( ebarp - eps_low )
           pt_high  = i
           pt_low   = i-1
           go to 1000
         end if
       end do
 c
-c            if we get here things are very, very bad. stop job
+c            if we get here things are very bad. stop job
 c
       write(*,*) '>> FATAL ERROR: routine mm03sc reached an impossible'
       write(*,*) '>>              condition. job terminated.'
@@ -1357,9 +1350,9 @@ c            due to a change in plastic strain rate. do only if calling
 c            routine really needs value since this requires some work.
 c
  1000 continue
-      if ( curve_set_type .ne. 2 ) return
-      if ( caseh .eq. 1 ) return
-      if ( deplas .le. zero ) return
+      if( curve_set_type .ne. 2 ) return
+      if( caseh .eq. 1 ) return
+      if( deplas .le. zero ) return
 c
 c                      for rate dependent response, we now know
 c                      hprime for the current plastic strain rate.
@@ -1443,7 +1436,7 @@ c     *                        function mm03lint                     *
 c     *                                                              *
 c     *                       written by : rhd                       *
 c     *                                                              *
-c     *                   last modified: 05/2/00                     *
+c     *                   last modified: 6/13/2018 rhd               *
 c     *                                                              *
 c     *    execute linear interpolation on a tabular function        *
 c     *    of a single variable where the x values are sorted in     *
@@ -1451,29 +1444,32 @@ c     *    increasing value but are not req'd to be uniformly spaced *
 c     *                                                              *
 c     ****************************************************************
 c
-
-      function mm03lint( xvalue, n, x, y )
-      implicit integer (a-z)
-      double precision
-     & xvalue, x(n), y(n), x1, x2, y1, y2, mm03lint
+      function mm03lint( xvalue, n, x, y ) result( value )
+      implicit none
 c
-      if ( xvalue .le. x(1) ) then
-        mm03lint = y(1)
+      integer :: n
+      double precision :: xvalue, x(n), y(n), value
+c
+      integer :: i, point
+      double precision :: x1, x2, y1, y2
+c
+      if( xvalue .le. x(1) ) then
+        value = y(1)
         return
       end if
 c
-      if ( xvalue .ge. x(n) ) then
-        mm03lint = y(n)
+      if( xvalue .ge. x(n) ) then
+        value = y(n)
         return
       end if
 c
       do point = 2, n
-        if ( xvalue .gt. x(point) ) cycle
+        if( xvalue .gt. x(point) ) cycle
         x1 = x(point-1)
         x2 = x(point)
         y1 = y(point-1)
         y2 = y(point)
-        mm03lint = y1 + (xvalue-x1)*(y2-y1)/(x2-x1)
+        value = y1 + (xvalue-x1)*(y2-y1)/(x2-x1)
         return
       end do
 c
@@ -1483,7 +1479,9 @@ c
       do i = 1, n
         write(*,*) '  i,x,y: ',i,x(i),y(i)
       end do
-      stop
+      call die_abort
+      return
+c
       end
 
 c     ****************************************************************
@@ -1492,7 +1490,7 @@ c     *                 subroutine mm03_set_sizes                    *
 c     *                                                              *
 c     *                       written by : rhd                       *
 c     *                                                              *
-c     *                   last modified: 1/11/2015  rhd              *
+c     *                   last modified: 6/13/2018 rhd               *
 c     *                                                              *
 c     *    called by warp3d for each material model to obtain        *
 c     *    various sizes of data for the model                       *
@@ -1520,7 +1518,7 @@ c
 c         4        number of state variables per point to be output
 c                  when user requests this type of results
 c
-      info_vector(1) = 11
+      info_vector(1) = 15
       info_vector(2) = 21
       info_vector(3) = 0
       info_vector(4) = 6
@@ -1980,13 +1978,13 @@ c
       double precision
      &  e, nu, f0, eps_ref, sigma_o, m_power, n_power, h_fixed,
      &  q1, q2, q3, nuc_s_n, nuc_e_n, nuc_f_n,
-     &  stime, ftime, sbar, dmeps(6), ebarp, ebarp_new,
-     &  dtauel(6), f2, smel, std(6), deps_sub(6), stress_start(6),
+     &  sbar, ebarp, ebarp_new,
+     &  dtauel(6), smel, std(6), deps_sub(6), stress_start(6),
      &  p_new, q_new, shear_mod, dep_last_sub, deq_last_sub,
-     &  et, h, g, f, p_trial, q_trial, deq, dep,
+     &  h, f, p_trial, q_trial, deq, dep,
      &  h_new, f_new, time_incr, newyld,
-     &  senerg, threeg, mpoweri, dt_eref, h_constant,
-     &  dsenrg, oldsig(6), dep_old, deq_old,
+     &  senerg, threeg, mpoweri, h_constant,
+     &  dsenrg, dep_old, deq_old,
      &  bulk_mod, sbar_new, dep_n, deq_n, equiv_eps,
      &  eps_o, h_inviscid, inviscid_stress, dword, zero, half,
      &  one, two, three, third, six, hprime_init,
@@ -1995,13 +1993,13 @@ c
 
 c
       logical  debug, plastic_loading, nucleation, gurson,
-     &         unload, signal, uloadp, rate_depen,
-     &         consth, lword(2), null_point,
+     &         signal, rate_depen,
+     &         consth, lword(2),
      &         power_law, segmental, first_time
       logical  allow_cut
 c
       integer  element, gpn, relem
-      integer  state, dbele, dbptno, iword(2), elenum, ptno,
+      integer  state, iword(2), elenum, ptno,
      &         gt_converge, vm_converge, iout, iterno
 c
       real  rword(2)
@@ -2172,7 +2170,8 @@ c
       history1(relem,7,gpn)  = zero
       history1(relem,8,gpn)  = zero
       history1(relem,9,gpn)  = zero
-      history1(relem,10,gpn) = zero
+      history1(relem,10:15,gpn) = history(relem,10:15,gpn) +
+     &                            deps(relem,1:6) ! elas eps
       return
 c
 c              trial elastic stresses are outside the yield surface.
@@ -2355,6 +2354,9 @@ c
       deps_plas(5) = deps(relem,5) - dsig(5) / shear_mod
       deps_plas(6) = deps(relem,6) - dsig(6) / shear_mod
 c
+      history1(relem,10:15,gpn) = history(relem,10:15,gpn) +
+     &                            deps(relem,1:6) - deps_plas(1:6)! elas eps
+c
       stress_n1(8) = stress_n(8)  +  half * (
      &       deps_plas(1) * (stress_n1(1) + stress_n(1))
      &     + deps_plas(2) * (stress_n1(2) + stress_n(2))
@@ -2392,8 +2394,6 @@ c
      & /,10x,3e15.6,/,10x,4e15.6
      & /,    '    gurson, f1, p_trial : ',l1,2f10.3,
      & /,    '    q_trial: ',f10.3 )
- 9001 format('Updated plastic strain rates. ele, gpn, old, new:',
-     & i6,i3,2f15.5)
  9012 format(//, 5x, 'history vector data:',
      &        /, 8x, 'current yield stress', f10.3,
      &        /, 8x, 'total plastic strain', f10.7,
@@ -2408,9 +2408,7 @@ c
      &        f12.3 ,
      &  /,5x, 24hstrain energy density = ,f10.4/)
  9017 format(10x,i5,i3,' point yields.  f    = ',f12.3 )
- 9020 format(10x,i5,i3,' reversed plastic yielding. dot, f =',2f12.3 )
  9021 format(10x,i5,i3,' large strain incr. / eps_o =',f12.3 )
- 9022 format(16x,' excessive reversed plasticity in step' )
  9030 format(10x,i5,i3,' elastic unloading f = ',f12.3 )
  9036 format( //, 5x, 'point is unloading'
      &         /, 8x, 'current yield stress = ', f10.2,
@@ -2425,12 +2423,6 @@ c
      &/,3x,'>> Warning: strain increment too large.',
      &/,3x,'            load step reduction not enabled.,'
      &/,3x,'            analysis terminated.' )
- 9044 format(
-     &/,3x,'>> Warning: strain increment too large.',
-     &/,3x,'            load step reduction not enabled for',
-     &/,3x,'            loads computation due to imposed',
-     &/,3x,'            displacements at start of step.',
-     &/,3x,'            this may cause problems later...')
  9050 format(
      &/,3x,'>> Warning: iterations for gurson model failed.',
      &/,3x,'            material model requesting step size reduction.',
@@ -2554,7 +2546,7 @@ c
      &             mpoweri, nucleation, nuc_s_n, nuc_e_n,
      &             nuc_f_n, ebarp_new, sbar_new, f_new, h_new,
      &             iout, debug, segmental,
-     &             power_law, converge, first_time )
+     &             power_law, converge )
       if ( .not. converge ) then
          call mm03ss( p_new, dep, q_new, deq, ebarp, f, sbar,
      &                consth, sigma_o, eps_o, h_constant, e,
@@ -2562,7 +2554,7 @@ c
      &                mpoweri, nucleation, nuc_s_n, nuc_e_n,
      &                nuc_f_n, ebarp_new, sbar_new, f_new, h_new,
      &                elenum, ptno, iout, debug, segmental,
-     &                power_law, converge, first_time )
+     &                power_law, converge )
       end if
       if ( .not. converge ) then
        gt_converge = 1
@@ -2805,7 +2797,7 @@ c
         deplas_high = ( q_trial - sig_cur_min_val ) /
      &                ( threeg + hprime_init )
       end if
-      call mm03qq( deplas_high, newyld_high, resid_high, first_time, 1 )
+      call mm03qq( deplas_high, newyld_high, resid_high, 1 )
 c
       fl = resid_low
       fh = resid_high
@@ -2840,7 +2832,7 @@ c                         current mid-point of bracketed range.
 c                         compute Ridder's "magic" factor:)
 c
       deplas_mid = half * ( deplas_low + deplas_high )
-      call mm03qq( deplas_mid, newyld_mid, resid_mid, first_time, 1 )
+      call mm03qq( deplas_mid, newyld_mid, resid_mid, 1 )
       sridder = sqrt( resid_mid**2 - resid_low*resid_high )
       if ( sridder .eq. zero ) then
         write(iout,9310)
@@ -2864,7 +2856,7 @@ c                         convergence of the actual residual
 c                         function.
 c
       deplas_riddr =  deplas_new
-      call mm03qq( deplas_riddr, newyld, resid_new, first_time, 1 )
+      call mm03qq( deplas_riddr, newyld, resid_new, 1 )
       if ( abs(resid_new) .le. sig_tol*newyld ) then
          iconverge = 4
          deplas = deplas_new
@@ -2926,7 +2918,7 @@ c
 c
  1000 continue
       if ( iconverge .eq. 3 .or. iconverge .eq. 5 .or. segmental )
-     &  call mm03qq( deplas, newyld, resid, first_time, 2 )
+     &  call mm03qq( deplas, newyld, resid, 2 )
       if ( deplas .le. zero ) then
         if ( abs(deplas) .gt. 0.001*eps_o ) vm_converge = 3
       end if
@@ -2972,15 +2964,11 @@ c
      & /,      '    newyld, ebarp_new: ',f10.3,f12.9,
      & /,      '    h_new, h_inviscid: ',2e10.3 )
  9130 format(/,' >> Updated stresses:',6(/,3x,f10.3) )
- 9200 format(/,6x,'>> Starting iteration: ',i3,
-     &        ' to find deplas...' )
  9300 format(/,3x,'>> Error: deplas not properly bracketed in',
      &  /,7x,'mises stress update.')
  9310 format(/,3x,'>> Error: divide by zero in mises update')
  9420 format(/,3x,'>> Error: failed to make new bracket',
      &       /,3x,'          for mises update of deplas')
- 9500 format(2x,'   >> resid, deplas_new, newyld: ',f10.6,2f13.8)
- 9700 format('** loops, iconverge, resid: ',i3,i3,f20.7)
 c
       end subroutine mm03q
 c ********************************************************************
@@ -2990,16 +2978,14 @@ c *                                                                  *
 c ********************************************************************
 c
 c
-      subroutine mm03qq( deplas, sig_bar, resid_now,
-     &                   first_iter, caseh )
+      subroutine mm03qq( deplas, sig_bar, resid_now, caseh )
       implicit none
 c
 c                    parameter declarations (and functions called)
 
-      double precision
+      double precision ::
      &   mm03is, mm03sc, deplas, sig_bar, resid_now
       integer caseh
-      logical first_iter
 c
 c
 c              This routine accesses the variables defined in the
@@ -3008,8 +2994,7 @@ c              feature.
 c
 c                   local variables in this routine
 c
-      double precision
-     & factor
+      double precision :: factor
 c
 c              caseh tells the segmental routine to compute (=2) or
 c              not compute (=1) the plastic modulus. This takes
@@ -3021,7 +3006,7 @@ c
         h_inviscid      = h_constant
       elseif ( power_law ) then
         inviscid_stress = mm03is( ebarp+deplas, sigma_o, e,
-     &                            n_power, h_inviscid, iout )
+     &                            n_power, h_inviscid )
       else
         inviscid_stress = mm03sc( ebarp+deplas, h_inviscid,
      &                            deplas, time_incr, caseh )
@@ -3170,7 +3155,7 @@ c
      & e13, m1, m2, c7, c8, c9, d10, d11, d12, d13,
      & cap_a21, cap_a22, cap_b2, cap_c2, denom, h10, h11, h12, h13,
      & con_1, con_2, con_3
-      logical ::  nonlinear_points, debug, ldummy
+      logical ::  nonlinear_points, debug
       integer ::  iword(mxvl*2), state(mxvl), i, j, nonlin_point,
      &            inc_factor
       equivalence (iword, dword )
@@ -3667,30 +3652,9 @@ c
      & /,    '    nuc_s_n, nuc_e_n, nuc_f_n : ',3f10.3,
      & /,    '    trial elastic stresses @ n+1 :',
      & /,10x,3e15.6,/,10x,3e15.6 )
- 9030 format(//,5x,'>> point is elastic, [cep] = [delas]')
  9500 format('  >>>> [cep]: ', /)
  9510 format(2x,6e14.6)
  9520 format(//)
- 9100 format('  >> update [cep].  current trial stress data: ',
-     & /,    '      sigx    :',e14.6,
-     & /,    '      sigy    :',e14.6,
-     & /,    '      sigz    :',e14.6,
-     & /,    '      sigxy   :',e14.6,
-     & /,    '      sigyz   :',e14.6,
-     & /,    '      sigxz   :',e14.6,
-     & /,    '      sm      :',e14.6,
-     & /,    '      sx      :',e14.6,
-     & /,    '      sy      :',e14.6,
-     & /,    '      sz      :',e14.6,
-     & /,    '      sl      :',e14.6,
-     & /,    '      nx      :',e14.6,
-     & /,    '      ny      :',e14.6,
-     & /,    '      nz      :',e14.6,
-     & /,    '      nxy     :',e14.6,
-     & /,    '      nyz     :',e14.6,
-     & /,    '      nxz     :',e14.6,
-     & /,    '      q       :',e14.6,
-     & /,    '      p       :',e14.6, // )
  9109 format('  >> debugging for element in block: ',i4)
  9110 format('  >> arguments   passed: ',
      & /,    '      shear_mod    :',e14.6,
@@ -3722,69 +3686,6 @@ c
      & /,    '      nxy     :',e14.6,
      & /,    '      nyz     :',e14.6,
      & /,    '      nxz     :',e14.6, // )
- 9200 format('  >> terms in section (4): ',
-     & /,    '      beta         :',e14.6,
-     & /,    '      ch           :',e14.6,
-     & /,    '      sh           :',e14.6,
-     & /,    '      pgp          :',e14.6,
-     & /,    '      pgq          :',e14.6,
-     & /,    '      pgsbar       :',e14.6,
-     & /,    '      pgf          :',e14.6,
-     & /,    '      cap_a11      :',e14.6,
-     & /,    '      cap_a12      :',e14.6,
-     & /,    '      cap_b1       :',e14.6,
-     & /,    '      cap_c1       :',e14.6,
-     & /,    '      h1           :',e14.6,
-     & /,    '      h2           :',e14.6,
-     & /,    '      h3           :',e14.6,
-     & /,    '      h4           :',e14.6,
-     & /,    '      h5           :',e14.6,
-     & /,    '      h6           :',e14.6,
-     & /,    '      h7           :',e14.6,
-     & /,    '      h8           :',e14.6,
-     & /,    '      d1           :',e14.6,
-     & /,    '      d2           :',e14.6,
-     & /,    '      d3           :',e14.6,
-     & /,    '      d4           :',e14.6,
-     & /,    '      anuc         :',e14.6,
-     & /,    '      anuc_prime   :',e14.6,
-     & /,    '      b1           :',e14.6,
-     & /,    '      b2           :',e14.6,
-     & /,    '      a1           :',e14.6,
-     & /,    '      a2           :',e14.6,
-     & /,    '      a3           :',e14.6,
-     & /,    '      a4           :',e14.6,
-     & /,    '      a5           :',e14.6, // )
- 9300 format('  >> terms in section (5): ',
-     & /,    '      cap_a21      :',e14.6,
-     & /,    '      cap_a22      :',e14.6,
-     & /,    '      cap_b2       :',e14.6,
-     & /,    '      cap_c2       :',e14.6,
-     & /,    '      d10          :',e14.6,
-     & /,    '      d11          :',e14.6,
-     & /,    '      d12          :',e14.6,
-     & /,    '      d13          :',e14.6,
-     & /,    '      m1           :',e14.6,
-     & /,    '      m2           :',e14.6,
-     & /,    '      c7           :',e14.6,
-     & /,    '      c8           :',e14.6,
-     & /,    '      c9           :',e14.6,
-     & /,    '      e10          :',e14.6,
-     & /,    '      e11          :',e14.6,
-     & /,    '      e12          :',e14.6,
-     & /,    '      e13          :',e14.6,
-     & /,    '      c5           :',e14.6,
-     & /,    '      c6           :',e14.6, //)
- 9400 format('  >> terms in section (6): ',
-     & /,    '      denom        :',e14.6,
-     & /,    '      h10          :',e14.6,
-     & /,    '      h11          :',e14.6,
-     & /,    '      h12          :',e14.6,
-     & /,    '      h13          :',e14.6,
-     & /,    '      mpi          :',e14.6,
-     & /,    '      mpn          :',e14.6,
-     & /,    '      mqi          :',e14.6,
-     & /,    '      mqn          :',e14.6, //)
 c
         end
 

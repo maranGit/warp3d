@@ -4,7 +4,7 @@ c     *                      subroutine store                        *
 c     *                                                              *
 c     *                       written by : bh                        *
 c     *                                                              *
-c     *                   last modified : 2/10/2018 rhd              *
+c     *                   last modified : 11/26/2018 rhd             *
 c     *                                                              *
 c     *                  writes analysis restart file                *
 c     *                                                              *
@@ -15,8 +15,7 @@ c
       subroutine store( savnam, savfil, sbflg1, sbflg2 )
       use global_data ! old common.main
 c
-      use elem_block_data, only: nonlocal_flags,
-     &                           nonlocal_data_n1
+      use elem_block_data, only: nonlocal_flags, nonlocal_data_n1
       use elem_extinct_data
       use node_release_data
       use elem_load_data
@@ -55,7 +54,7 @@ c
       character :: dbname*100
       logical :: nameok, scanms, delfil, wrt_nod_lod, write_table,
      &           initial_stresses_exist
-      real :: dumr, rsum
+      real :: dumr
       real, parameter :: rzero = 0.0
       double precision :: dumd
       double precision, parameter :: dzero=0.0d0
@@ -104,20 +103,25 @@ c
 c
 c                       open the file.
 c
+#ifdef __INTEL_COMPILER
       open( fileno, file=dbname, status='new', access='sequential',
      &     form='unformatted', recordtype='segmented' )
+#else
+      open( fileno, file=dbname, status='new', access='sequential',
+     &     form='unformatted' )
+#endif
+
 c
 c                       MPI:
 c                         we need to gather all the stresses, strains,
-c                         element volumes back
+c                         element volumes, initial state arrays  back
 c                         to the root processor to store in the restart
 c                         database.
-c                       else dummy routine
 c
       call wmpi_get_str ( 2 )
-      call wmpi_get_str ( 3 )
       call wmpi_get_str ( 4 )
       call wmpi_get_str ( 5 )
+      if( initial_state_option ) call wmpi_get_initial_state
 c
 c                       after each block of data written on the file,
 c                       we write a record containing a 'check' variable
@@ -136,7 +140,7 @@ c
      &              crdtop, nummat, numcol, histep,
      &              lowstp, ltmstp, nlibel, numlod, mxiter,
      &              mniter, lodhed, lgnmcn, mxlitr,
-     &              nogp, nprs, nplrs, nelblk, numgrp, lgoump,
+     &              nprs, nplrs, nelblk, numgrp, lgoump,
      &              max_current_pts, max_current_curves,
      &              num_seg_curve_sets,
      &              solver_flag, old_solver_flag, solver_memory,
@@ -149,7 +153,8 @@ c
      &              initial_map_type, final_map_type,
      &              coarsening, agg_levels, interpolation, relaxation,
      &              sweeps, cf, cycle_type, max_levels,
-     &              one_crystal_hist_size, common_hist_size
+     &              one_crystal_hist_size, common_hist_size,
+     &              initial_state_step, mxnmbl
       write (fileno) check_data_key
 c
 c
@@ -168,6 +173,7 @@ c
      &              sparse_stiff_binary, sparse_research,
      &              solver_mkl_iterative, output_packets,
      &              temperatures_ref, fgm_node_values_defined,
+     &              fgm_node_values_used,
      &              hyp_trigger_step, hyp_first_solve,
      &              time_assembly, parallel_assembly_allowed,
      &              parallel_assembly_used,
@@ -176,7 +182,8 @@ c
      &              extrapolate, extrap_off_next_step,
      &              divergence_check, diverge_check_strict,
      &              line_search, ls_details, initial_stresses_exist,
-     &              initial_stresses_user_routine
+     &              initial_stresses_user_routine,
+     &              initial_state_option, initial_stresses_input
       write(fileno) sparse_stiff_file_name, packet_file_name,
      &              initial_stresses_file
       write (fileno) check_data_key
@@ -209,12 +216,10 @@ c
       call wrtbk( fileno, invdst, nodof )
       call wrtbk( fileno, plrlst, mxlsz )
       call wrtbk( fileno, stprng, mxlc*2 )
-      call wrtbk( fileno, gpmap,  nogp )
       call wrtbk( fileno, incmap, noelem )
       call wrtbk( fileno, crdmap, nonode )
       call wrtbk( fileno, dstmap, nonode )
       call wrtbk( fileno, cstmap, nodof )
-      call wrtbk( fileno, state,  nogp )
       call wrtbk( fileno, incid,  inctop )
       call wrtbk( fileno, prslst, mxlsz )
       call wrtbk( fileno, lodlst, mxlc )
@@ -222,7 +227,7 @@ c
       call store_cmplx_int( fileno, 1 )
       call store_cmplx_int( fileno, 2 )
       call store_cmplx_int( fileno, 3 )
-      call wrt2d( fileno, elblks(0,1) , 4, 4, nelblk  )
+      call wrt2d( fileno, elblks(0,1) , 4, 4, mxnmbl  )
       call wrtbk( fileno, cp, mxedof )
       call wrtbk( fileno, dcp, mxedof )
       call wrt2d( fileno, icp, mxutsz, mxutsz, 2  )
@@ -312,9 +317,6 @@ c
       call store_blocks( fileno, 2 )
       write (fileno) check_data_key
       write(out,9060)
-      call store_blocks( fileno, 3 )
-      write (fileno) check_data_key
-      write(out,9070)
       call store_blocks( fileno, 4 )
       write (fileno) check_data_key
       write(out,9080)
@@ -700,6 +702,7 @@ c
      &         convergence_history(i)%adapt_substeps
       end do
       write(fileno) run_user_solution_routine
+      write(fileno) check_data_key
 c
 c                       save the release_cons_table if we have nodes
 c                       undergoing release operations
@@ -716,6 +719,7 @@ c
         end do
       end if
       write(out,9210)
+      write(fileno) check_data_key
 c
 c                       save for output commands file ... information
 c                       save file name and bitmap list if it exists
@@ -727,6 +731,7 @@ c
       write(fileno) local_length
       if( local_length > 0 )
      &   write(fileno) output_step_bitmap_list
+      write(fileno) check_data_key
 c
 c                       save initial stress data
 c
@@ -734,6 +739,15 @@ c
         call wrtbk( fileno, initial_stresses, prec_fact*noelem*6 )
         write(out,9230)
       end if
+      write(fileno) check_data_key
+c
+c                       save initial state arrays if they exist yet
+c
+      if( initial_state_option ) then
+          call store_blocks( fileno, 3 )
+          write(out,9240)
+      end if
+      write(fileno) check_data_key
 c
 c                       USER routines data
 c
@@ -765,7 +779,6 @@ c
       sbflg2= .false.
 c
 c
- 1000 format ( 3x, e16.6 )
  9000 format(15x,'> scalars written...')
  9010 format(15x,'> integer arrays written...')
  9020 format(15x,'> logical & character arrays written...')
@@ -774,7 +787,6 @@ c
  9050 format(15x,'> histories and [Dt] blocks written...')
  9055 format(15x,'> stress blocks written...')
  9060 format(15x,'> material rotation blocks written...')
- 9070 format(15x,'> material trial elastic stress blocks written...')
  9080 format(15x,'> strain blocks written...')
  9090 format(15x,'> element volume blocks written...')
  9100 format(15x,'> material curves written...')
@@ -792,6 +804,7 @@ c
  9210 format(15x,'> convergence history written...')
  9220 format(15x,'> user routine data written...')
  9230 format(15x,'> initial stress data written...')
+ 9240 format(15x,'> initial state data arrays written...')
       return
       end
 c     ****************************************************************
@@ -799,7 +812,7 @@ c     *                                                              *
 c     *                      subroutine store_blocks                 *
 c     *                                                              *
 c     *                       written by : rhd                       *
-c     *                   last modified : 1/9/2016 rhd               *
+c     *                   last modified : 6/28/2018 rhd              *
 c     *                                                              *
 c     *     write data into restart file for the requested data      *
 c     *     structures which following the element blocking          *
@@ -810,22 +823,27 @@ c
       use global_data ! old common.main
 c
       use elem_block_data, only : history_blocks, rot_n1_blocks,
-     &                            eps_n_blocks,
+     &                            eps_n_blocks, initial_state_data,
      &                            urcs_n_blocks, history_blk_list,
      &                            rot_blk_list,
      &                            eps_blk_list, urcs_blk_list,
      &                            element_vol_blocks,
      &                            cep_blocks, cep_blk_list
 c
-      implicit integer (a-z)
-      data check_data_key / 2147483647 /
+      implicit none
+c
+      integer :: fileno, proc_type
+c
+      integer :: blk
+
+      integer, parameter :: check_data_key = 2147483647
 c
 c
-      go to ( 100, 200, 300, 400, 500, 600 ), proc_type
+      select case( proc_type )
 c
 c            element history data and [Dt]s
 c
- 100  continue
+      case( 1 )
       do blk = 1, nelblk
        if ( history_blk_list(blk) .gt. 0 ) then
           write(fileno) history_blocks(blk)%ptr
@@ -836,55 +854,79 @@ c
           write(fileno) check_data_key
        end if
       end do
-      return
 c
 c            element rotation matrices for gauss (material) points
 c            for geometric nonlinear element blocks.
 c
- 200  continue
+      case( 2 )
       do blk = 1, nelblk
        if ( rot_blk_list(blk) .eq. 1 ) then
            write(fileno) rot_n1_blocks(blk)%ptr
            write(fileno) check_data_key
        end if
       end do
-      return
 c
-c            <available>
+c            initial state arrays
 c
- 300  continue
-      return
+      case( 3 )
+      if( .not. allocated( initial_state_data ) ) then
+        write(out,9020)
+        call die_abort
+      end if
+c
+      associate( x => initial_state_data )
+      do blk = 1, nelblk
+        if( allocated( x(blk)%W_plastic_nis_block ) ) then
+          write(fileno) x(blk)%W_plastic_nis_block
+          write(fileno) check_data_key
+        else
+          write(out,9010) blk
+          call die_abort
+        end if
+      end do
+      end associate
 c
 c            element strains at gauss points - all elements
 c
- 400  continue
+      case( 4 )
       do blk = 1, nelblk
         if ( eps_blk_list(blk) .eq. 1 ) then
           write(fileno) eps_n_blocks(blk)%ptr
           write(fileno) check_data_key
         end if
       end do
-      return
 c
 c            element stresses at gauss points - all elements
 c
- 500  continue
+      case( 5 )
       do blk = 1, nelblk
         if ( urcs_blk_list(blk) .eq. 1 ) then
            write(fileno) urcs_n_blocks(blk)%ptr
            write(fileno) check_data_key
         end if
       end do
-      return
 c
 c            element volumes
 c
- 600  continue
+      case( 6 )
       do blk = 1, nelblk
          write(fileno) element_vol_blocks(blk)%ptr
          write(fileno) check_data_key
       end do
+c
+      case default
+         write(out,9000)
+        call die_abort
+      end select
+c
       return
+c
+ 9000 format(/1x,'>>>>> error: routine store_blocks inconsistency.',
+     &   /1x,    '             job terminated...')
+ 9010 format(/1x,'>>>>> error: routine store_blocks. action 3, blk:',
+     &  i10, /1x,    '             job terminated...')
+ 9020 format(/1x,'>>>>> error: routine store_blocks. action 3',
+     &  i10, /1x,    '             job terminated...')
 c
       end
 
